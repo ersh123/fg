@@ -1,0 +1,35 @@
+diff --git a/config/electron-builder.config.cjs b/config/electron-builder.config.cjs
+index 6b63ae84..eb0a5029 100644
+--- a/config/electron-builder.config.cjs
++++ b/config/electron-builder.config.cjs
+@@ -540,8 +540,7 @@ module.exports = {
+       entry: {
+         // Why: Electron reports WM_CLASS=orca for the visible Linux window;
+         // GNOME docks need an exact match to group it with orca-ide.desktop.
+-        StartupWMClass: 'orca',
+-        Exec: 'orca-hardened %U'
++        StartupWMClass: 'orca'
+       }
+     },
+     extraResources: [
+diff --git a/config/scripts/linux-production-hardening.test.mjs b/config/scripts/linux-production-hardening.test.mjs
+index 2a46a3a0..a2599f0f 100644
+--- a/config/scripts/linux-production-hardening.test.mjs
++++ b/config/scripts/linux-production-hardening.test.mjs
+@@ -51,7 +51,7 @@ describe('Linux production hardening', () => {
+       from: 'resources/linux/hardening',
+       to: 'hardening'
+     })
+-    expect(electronBuilderConfig.linux.desktop.entry.Exec).toBe('orca-hardened %U')
++    expect(electronBuilderConfig.linux.desktop.entry.Exec).toBeUndefined()
+     const afterInstall = readFileSync(
+       new URL('../../resources/linux/packaging/after-install.sh', import.meta.url),
+       'utf8'
+@@ -64,6 +64,7 @@ describe('Linux production hardening', () => {
+     expect(afterInstall).toContain('for command in orca-hardened')
+     expect(afterInstall).toContain('"/usr/bin/$command"')
+     expect(afterInstall).toContain('systemctl --global enable orca-hardened-gc.timer')
++    expect(afterInstall).toContain("Exec=/usr/bin/orca-hardened")
+     expect(afterRemove).toContain('orca-hardened-gc.timer')
+   })
+ 
