@@ -28,21 +28,126 @@ index 83d30b02..3277914f 100755
  
  exit 0
 diff --git a/src/main/daemon/daemon-terminal-admission-linux.test.ts b/src/main/daemon/daemon-terminal-admission-linux.test.ts
-index 3f78e09d..f0138bc1 100644
+index 3f78e09d..b9c25cfd 100644
 --- a/src/main/daemon/daemon-terminal-admission-linux.test.ts
 +++ b/src/main/daemon/daemon-terminal-admission-linux.test.ts
-@@ -44,11 +44,11 @@ describe('DaemonTerminalAdmission Linux hardening', () => {
+@@ -9,27 +9,59 @@ vi.mock('./linux-terminal-admission-budget', () => ({
+ import { DaemonTerminalAdmission } from './daemon-terminal-admission'
+ 
+ function createAdmission(liveSessionIds: string[] = []) {
++  const client = { authenticatedPairEstablished: true, streamSocket: {} }
++  const preparation = {
++    canceled: false,
++    controller: new AbortController(),
++    clientId: 'client-1',
++    requestId: 'request-1'
++  }
++  const result = {
++    isNew: true,
++    snapshot: null,
++    pid: 4242,
++    shellState: 'ready',
++    wslDistro: null,
++    attachToken: Symbol('attach'),
++    incarnationId: 'incarnation-1'
++  }
+   const host = {
+     listSessions: vi.fn(() => liveSessionIds.map((sessionId) => ({ sessionId }))),
+-    createOrAttach: vi.fn()
++    createOrAttach: vi.fn(async () => result),
++    detach: vi.fn()
+   }
+   const admission = new DaemonTerminalAdmission({
+     host,
+-    connections: {
+-      get: vi.fn(() => ({ authenticatedPairEstablished: true, streamSocket: {} }))
+-    },
++    connections: { get: vi.fn(() => client) },
+     endpoint: { hasLostOwnership: vi.fn(() => false) },
+-    preparations: {},
+-    attachments: {},
+-    historySeedTransfers: {},
+-    transientFactRelay: {},
+-    streamDataBatcher: {},
+-    log: {},
++    preparations: {
++      register: vi.fn(() => preparation),
++      prepareUnlessCanceled: vi.fn(async () => {}),
++      finish: vi.fn()
++    },
++    attachments: {
++      attach: vi.fn(),
++      lastInputAt: vi.fn(),
++      release: vi.fn()
++    },
++    historySeedTransfers: { take: vi.fn(() => []) },
++    transientFactRelay: {
++      isBackgrounded: vi.fn(() => false),
++      onSessionData: vi.fn(),
++      onSessionExit: vi.fn()
++    },
++    streamDataBatcher: {
++      enqueue: vi.fn(),
++      enqueueControlEvent: vi.fn(),
++      flush: vi.fn(),
++      refreshSessionDroppability: vi.fn()
++    },
++    log: { log: vi.fn(), close: vi.fn() },
+     isAcceptingWork: () => true,
+     requestEndpointRetirement: vi.fn(),
+     reevaluateIdleShutdown: vi.fn()
+   } as never)
+-  return { admission, host }
++  return { admission, host, result }
+ }
+ 
+ const request = (sessionId: string, attachOnly = false) =>
+@@ -43,27 +75,31 @@ describe('DaemonTerminalAdmission Linux hardening', () => {
+   beforeEach(() => assertLinuxTerminalAdmissionMock.mockReset())
  
    it('checks the aggregate budget before a new PTY reaches the host', async () => {
-     const { admission, host } = createAdmission()
+-    const { admission, host } = createAdmission()
 -    assertLinuxTerminalAdmissionMock.mockImplementation(() => {
 -      throw new Error('terminal_admission_memory_pressure')
--    })
-+    assertLinuxTerminalAdmissionMock.mockRejectedValue(
-+      new Error('terminal_admission_memory_pressure')
-+    )
++    const order: string[] = []
++    const { admission, host, result } = createAdmission()
++    assertLinuxTerminalAdmissionMock.mockImplementation(async () => {
++      order.push('budget')
++    })
++    host.createOrAttach.mockImplementation(async () => {
++      order.push('host')
++      return result
+     })
  
 -    await expect(admission.createOrAttach('client-1', request('session-1'))).rejects.toThrow(
-+    await expect(() => admission.createOrAttach('client-1', request('session-1'))).rejects.toThrow(
-       'terminal_admission_memory_pressure'
-     )
+-      'terminal_admission_memory_pressure'
+-    )
++    await admission.createOrAttach('client-1', request('session-1'))
+ 
++    expect(order).toEqual(['budget', 'host'])
+     expect(assertLinuxTerminalAdmissionMock).toHaveBeenCalledWith({
+       attachOnly: false,
+       liveSessions: 0,
+       pendingCreates: 0
+     })
+-    expect(host.createOrAttach).not.toHaveBeenCalled()
++    expect(host.createOrAttach).toHaveBeenCalledOnce()
+   })
+ 
+   it('never blocks an attach-only recovery on current memory pressure', async () => {
+     const { admission } = createAdmission()
+ 
+-    await admission.createOrAttach('client-1', request('session-1', true)).catch(() => {})
++    await admission.createOrAttach('client-1', request('session-1', true))
+ 
+     expect(assertLinuxTerminalAdmissionMock).not.toHaveBeenCalled()
+   })
+@@ -71,7 +107,7 @@ describe('DaemonTerminalAdmission Linux hardening', () => {
+   it('never blocks reattaching an exact live session', async () => {
+     const { admission } = createAdmission(['session-1'])
+ 
+-    await admission.createOrAttach('client-1', request('session-1')).catch(() => {})
++    await admission.createOrAttach('client-1', request('session-1'))
+ 
+     expect(assertLinuxTerminalAdmissionMock).not.toHaveBeenCalled()
+   })
