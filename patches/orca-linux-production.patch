@@ -1,0 +1,191 @@
+diff --git a/config/scripts/linux-production-hardening.test.mjs b/config/scripts/linux-production-hardening.test.mjs
+new file mode 100644
+index 00000000..1a7e56cb
+--- /dev/null
++++ b/config/scripts/linux-production-hardening.test.mjs
+@@ -0,0 +1,52 @@
++import { mkdtempSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
++import { join } from 'node:path'
++import { tmpdir } from 'node:os'
++import { spawnSync } from 'node:child_process'
++import { describe, expect, it } from 'vitest'
++
++const resource = (name) => new URL(`../../resources/linux/hardening/${name}`, import.meta.url)
++
++describe('Linux production hardening', () => {
++  it('ships one aggregate cgroup slice for every Orca generation and agent child', () => {
++    const unit = readFileSync(resource('orca-hardened.slice'), 'utf8')
++    expect(unit).toContain('[Slice]')
++    expect(unit).toContain('MemoryHigh=65%')
++    expect(unit).toContain('MemoryMax=75%')
++    expect(unit).toContain('MemorySwapMax=20%')
++    expect(unit).toContain('TasksMax=1536')
++    expect(unit).toContain('ManagedOOMMemoryPressure=kill')
++  })
++
++  it('launches through the aggregate slice and falls back without recursion', () => {
++    const dir = mkdtempSync(join(tmpdir(), 'orca-hardening-launcher-'))
++    const log = join(dir, 'calls.log')
++    for (const [name, body] of Object.entries({
++      'systemctl': `#!/bin/sh\nexit 0\n`,
++      'systemd-run': `#!/bin/sh\nprintf '%s\\n' \"$*\" > ${JSON.stringify(log)}\nexit 0\n`
++    })) {
++      const path = join(dir, name)
++      writeFileSync(path, body)
++      chmodSync(path, 0o755)
++    }
++    const result = spawnSync(resource('orca-hardened-exec'), ['/bin/true', 'hello world'], {
++      env: { ...process.env, PATH: `${dir}:/usr/bin:/bin`, ORCA_HARDENED_ACTIVE: '' },
++      encoding: 'utf8'
++    })
++    expect(result.status).toBe(0)
++    const call = readFileSync(log, 'utf8')
++    expect(call).toContain('--slice=orca-hardened.slice')
++    expect(call).toContain('ORCA_HARDENED_ACTIVE=1')
++    expect(call).toContain('/bin/true')
++  })
++
++  it('provides a doctor and conservative stale-runtime janitor', () => {
++    const doctor = readFileSync(resource('orca-hardened-doctor'), 'utf8')
++    const janitor = readFileSync(resource('orca-hardened-gc'), 'utf8')
++    expect(doctor).toContain('--repair-proven-stale')
++    expect(doctor).toContain('orca-hardened.slice')
++    expect(janitor).toContain('orchestration worker-list')
++    expect(janitor).toContain('--terminal-state reclaimable')
++    expect(janitor).not.toContain('pkill -9')
++    expect(janitor).not.toContain('killall')
++  })
++})
+diff --git a/src/main/daemon/linux-terminal-admission-budget.test.ts b/src/main/daemon/linux-terminal-admission-budget.test.ts
+new file mode 100644
+index 00000000..f36bc2db
+--- /dev/null
++++ b/src/main/daemon/linux-terminal-admission-budget.test.ts
+@@ -0,0 +1,48 @@
++import { describe, expect, it } from 'vitest'
++import { evaluateLinuxTerminalAdmission } from './linux-terminal-admission-budget'
++
++const gib = 1024 ** 3
++
++describe('Linux hardened terminal admission', () => {
++  it('is disabled outside a hardened Linux launch', () => {
++    expect(evaluateLinuxTerminalAdmission({
++      platform: 'linux',
++      hardened: false,
++      liveSessions: 100,
++      memTotalBytes: 16 * gib,
++      memAvailableBytes: 100
++    })).toEqual({ allowed: true })
++  })
++
++  it('bounds live terminals from memory instead of CPU count', () => {
++    expect(evaluateLinuxTerminalAdmission({
++      platform: 'linux',
++      hardened: true,
++      liveSessions: 8,
++      memTotalBytes: 16 * gib,
++      memAvailableBytes: 8 * gib
++    })).toMatchObject({ allowed: false, reason: 'terminal_limit' })
++    expect(evaluateLinuxTerminalAdmission({
++      platform: 'linux',
++      hardened: true,
++      liveSessions: 7,
++      memTotalBytes: 16 * gib,
++      memAvailableBytes: 8 * gib
++    })).toEqual({ allowed: true })
++  })
++
++  it('refuses a cold spawn under memory pressure but permits reattach', () => {
++    const input = {
++      platform: 'linux' as const,
++      hardened: true,
++      liveSessions: 1,
++      memTotalBytes: 16 * gib,
++      memAvailableBytes: 1 * gib
++    }
++    expect(evaluateLinuxTerminalAdmission(input)).toMatchObject({
++      allowed: false,
++      reason: 'memory_pressure'
++    })
++    expect(evaluateLinuxTerminalAdmission({ ...input, attachOnly: true })).toEqual({ allowed: true })
++  })
++})
+diff --git a/src/main/daemon/terminal-session-teardown.test.ts b/src/main/daemon/terminal-session-teardown.test.ts
+index 95010efd..b119ec37 100644
+--- a/src/main/daemon/terminal-session-teardown.test.ts
++++ b/src/main/daemon/terminal-session-teardown.test.ts
+@@ -97,27 +97,41 @@ describe('TerminalSessionTeardown plain-shell teardown', () => {
+     expect(ownsRoot()).toBe(false)
+   })
+ 
+-  it('non-win32 immediate kill skips the tree kill (pgroup force-kill suffices)', async () => {
++  it('non-win32 immediate kill snapshots detached descendants before force-kill', async () => {
+     setPlatform('linux')
+     const session = createPlainShellSession()
+     const teardown = new TerminalSessionTeardown(new Map([['s1', session]]))
+ 
+     await teardown.killSession('s1', session, true)
+ 
+-    expect(killWithDescendantSweepMock).not.toHaveBeenCalled()
++    expect(killWithDescendantSweepMock).toHaveBeenCalledWith(
++      4242,
++      expect.any(Function),
++      expect.objectContaining({ ownsRoot: expect.any(Function) })
++    )
++    const killRoot = killWithDescendantSweepMock.mock.calls[0][1] as () => void
++    killRoot()
+     expect(session.forceKillAndWaitForExit).toHaveBeenCalled()
+   })
+ 
+-  it('non-immediate (graceful) kill uses the plain kill path without a sweep', async () => {
+-    setPlatform('win32')
++  it('non-immediate (graceful) kill snapshots descendants before signalling the root', async () => {
++    setPlatform('linux')
+     const session = createPlainShellSession()
+     const teardown = new TerminalSessionTeardown(new Map([['s1', session]]))
+ 
+     await teardown.killSession('s1', session, false)
+ 
+-    expect(killWithDescendantSweepMock).not.toHaveBeenCalled()
+-    expect(session.forceKillAndWaitForExit).not.toHaveBeenCalled()
+-    expect(session.kill).toHaveBeenCalled()
++    expect(session.beginTermination).toHaveBeenCalledOnce()
++    expect(session.scheduleForceDisposeFallback).toHaveBeenCalledOnce()
++    expect(killWithDescendantSweepMock).toHaveBeenCalledWith(
++      4242,
++      expect.any(Function),
++      expect.objectContaining({ ownsRoot: expect.any(Function) })
++    )
++    const killRoot = killWithDescendantSweepMock.mock.calls[0][1] as () => void
++    killRoot()
++    expect(session.signalTerminationRoot).toHaveBeenCalledOnce()
++    expect(session.kill).not.toHaveBeenCalled()
+   })
+ })
+ 
+diff --git a/src/renderer/src/components/native-chat/use-native-chat-composer-attachments.test.tsx b/src/renderer/src/components/native-chat/use-native-chat-composer-attachments.test.tsx
+index 1825a0db..f7fb5a16 100644
+--- a/src/renderer/src/components/native-chat/use-native-chat-composer-attachments.test.tsx
++++ b/src/renderer/src/components/native-chat/use-native-chat-composer-attachments.test.tsx
+@@ -321,6 +321,21 @@ describe('useNativeChatComposerAttachments', () => {
+     act(() => probe.root.unmount())
+   })
+ 
++  it('revokes pending blob previews when the composer unmounts', async () => {
++    const probe = await renderProbe('pty-1')
++    const revoke = vi.spyOn(URL, 'revokeObjectURL')
++
++    act(() => {
++      probe.latest().beginPendingImageAttachment('blob:preview-unmount')
++      probe.latest().beginPendingImageAttachment('data:image/png;base64,AAAA')
++    })
++
++    act(() => probe.root.unmount())
++
++    expect(revoke).toHaveBeenCalledTimes(1)
++    expect(revoke).toHaveBeenCalledWith('blob:preview-unmount')
++  })
++
+   it('revokes a blob: preview URL on removal but not a data: preview URL', async () => {
+     const probe = await renderProbe('pty-1')
+     const revoke = vi.spyOn(URL, 'revokeObjectURL')
