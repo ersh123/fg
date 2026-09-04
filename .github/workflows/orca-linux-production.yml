@@ -38,10 +38,13 @@ jobs:
           base64 -d control/patches/orca-linux-production-green.patch.gz.b64 | gzip -dc > "$RUNNER_TEMP/orca-linux-production.patch"
           printf '%s  %s\n' 'cf2381f60caa483978b2895bcb37198cbf548a91d9a8fdf411a8f15eb79b7014' "$RUNNER_TEMP/orca-linux-production.patch" | sha256sum --check --strict
           test "$(git -C control hash-object patches/orca-linux-production-green-fix-v2.patch)" = '41c0a016a35e3fbdff69f245f4c873a9e66b18e8'
+          test "$(git -C control hash-object patches/orca-linux-production-quality-fix.patch)" = '9166fd0aef14f40e5f6f2e0d22a780a9b0f68ac1'
           git -C orca apply --check "$RUNNER_TEMP/orca-linux-production.patch"
           git -C orca apply "$RUNNER_TEMP/orca-linux-production.patch"
           git -C orca apply --check ../control/patches/orca-linux-production-green-fix-v2.patch
           git -C orca apply ../control/patches/orca-linux-production-green-fix-v2.patch
+          git -C orca apply --check ../control/patches/orca-linux-production-quality-fix.patch
+          git -C orca apply ../control/patches/orca-linux-production-quality-fix.patch
           git -C orca diff --check
 
       - name: Set up Node 24
@@ -190,6 +193,7 @@ jobs:
           SOURCE_SHA=67e22345daf882190911355eed152ef33e051c5e
           HARDENING_BASE_PATCH_SHA256=cf2381f60caa483978b2895bcb37198cbf548a91d9a8fdf411a8f15eb79b7014
           HARDENING_FIX_PATCH_GIT_BLOB=41c0a016a35e3fbdff69f245f4c873a9e66b18e8
+          HARDENING_QUALITY_FIX_GIT_BLOB=9166fd0aef14f40e5f6f2e0d22a780a9b0f68ac1
           PACKAGE_VERSION=1.4.198-hardened.1
           TESTS=PASS
           TYPECHECK=PASS
