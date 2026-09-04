@@ -1,0 +1,92 @@
+name: Orca Linux Hardened Production
+
+on:
+  push:
+    branches: [orca-linux-production]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orca-linux-production-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout build control
+        uses: actions/checkout@v4
+        with:
+          path: control
+
+      - name: Checkout pinned Orca source
+        uses: actions/checkout@v4
+        with:
+          repository: stablyai/orca
+          ref: 67e22345daf882190911355eed152ef33e051c5e
+          path: orca
+          fetch-depth: 1
+
+      - name: Apply Linux hardening patch
+        run: git -C orca apply --check ../control/patches/orca-linux-production.patch && git -C orca apply ../control/patches/orca-linux-production.patch
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.8.0'
+
+      - name: Set up pnpm 12
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.0.0
+          run_install: false
+
+      - name: Install build dependencies
+        working-directory: orca
+        run: pnpm install --frozen-lockfile
+
+      - name: Run hardened regression tests
+        working-directory: orca
+        run: >-
+          pnpm exec vitest run --config config/vitest.config.ts
+          src/main/daemon/terminal-session-teardown.test.ts
+          src/main/daemon/linux-terminal-admission-budget.test.ts
+          src/renderer/src/components/native-chat/use-native-chat-composer-attachments.test.tsx
+          config/scripts/linux-production-hardening.test.mjs
+
+      - name: Typecheck Node and renderer
+        working-directory: orca
+        run: pnpm run typecheck:node && pnpm run typecheck:web
+
+      - name: Build Linux desktop
+        working-directory: orca
+        env:
+          ORCA_LOCAL_BUILD_VERSION: 1.4.178-rc.2.hardened.1
+          ORCA_BUILD_COMMIT: 67e22345daf882190911355eed152ef33e051c5e
+        run: |
+          pnpm run build:desktop
+          pnpm run ensure:electron-runtime
+          pnpm exec electron-builder --config config/electron-builder.config.cjs --linux deb --x64 --publish never
+
+      - name: Locate and inspect Debian package
+        working-directory: orca
+        run: |
+          deb="$(find dist -maxdepth 2 -type f -name '*.deb' -print -quit)"
+          test -n "$deb"
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb" | tee dist/deb-contents.txt
+          printf '%s\n' "$deb" > dist/deb-path.txt
+
+      - name: Upload Linux package
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-hardened-linux-amd64
+          path: |
+            orca/dist/*.deb
+            orca/dist/deb-contents.txt
+            orca/dist/deb-path.txt
+          if-no-files-found: error
+          retention-days: 14
