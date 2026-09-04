@@ -21,6 +21,7 @@ test "$(git -C "$ROOT" hash-object patches/orca-linux-production-green-fix-v2.pa
 test "$(git -C "$ROOT" hash-object patches/orca-linux-production-quality-fix.patch)" = '9166fd0aef14f40e5f6f2e0d22a780a9b0f68ac1'
 test "$(git -C "$ROOT" hash-object patches/orca-linux-production-packaging-exec-fix.patch)" = 'f989fefe4ddd5ce9e5a6226742b7ff442a3ef52f'
 test "$(git -C "$ROOT" hash-object patches/orca-linux-production-updater-red.patch)" = '535d178da7fdcf964f93d2d7c7c8863372b2ab9f'
+test "$(git -C "$ROOT" hash-object patches/orca-linux-production-updater-green.patch)" = '91240b855f479e9b6799314a4988aa0efdf60a92'
 
 patches=(
   "$base_patch"
@@ -28,6 +29,7 @@ patches=(
   "$ROOT/patches/orca-linux-production-quality-fix.patch"
   "$ROOT/patches/orca-linux-production-packaging-exec-fix.patch"
   "$ROOT/patches/orca-linux-production-updater-red.patch"
+  "$ROOT/patches/orca-linux-production-updater-green.patch"
 )
 for patch in "${patches[@]}"; do
   git -C "$WORK" apply --check "$patch"
@@ -150,4 +152,5 @@ GUI_SMOKE=PASS
 UPSTREAM_UPDATER_DISABLED=PASS
 UNINSTALL_ROLLBACK=PASS
 USER_DATA_PRESERVATION=PASS
+UPDATER_GREEN_PATCH_GIT_BLOB=91240b855f479e9b6799314a4988aa0efdf60a92
 EOF
