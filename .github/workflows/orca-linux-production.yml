@@ -31,14 +31,17 @@ jobs:
           path: orca
           fetch-depth: 1
 
-      - name: Decode and apply reviewed Linux hardening patch
+      - name: Decode and apply reviewed Linux hardening patches
         shell: bash
         run: |
           set -euo pipefail
           base64 -d control/patches/orca-linux-production-green.patch.gz.b64 | gzip -dc > "$RUNNER_TEMP/orca-linux-production.patch"
           printf '%s  %s\n' 'cf2381f60caa483978b2895bcb37198cbf548a91d9a8fdf411a8f15eb79b7014' "$RUNNER_TEMP/orca-linux-production.patch" | sha256sum --check --strict
+          printf '%s  %s\n' '6d07eb5cdf8b15091ec0bad3f670a31d0dd1b5dc69cf5b456b793cba8bda5084' 'control/patches/orca-linux-production-green-fix-v2.patch' | sha256sum --check --strict
           git -C orca apply --check "$RUNNER_TEMP/orca-linux-production.patch"
           git -C orca apply "$RUNNER_TEMP/orca-linux-production.patch"
+          git -C orca apply --check ../control/patches/orca-linux-production-green-fix-v2.patch
+          git -C orca apply ../control/patches/orca-linux-production-green-fix-v2.patch
           git -C orca diff --check
 
       - name: Set up Node 24
@@ -185,7 +188,8 @@ jobs:
           cat > dist/PRODUCTION-GATE.txt <<'EOF'
           VERDICT=PRODUCTION_READY_LINUX_AMD64
           SOURCE_SHA=67e22345daf882190911355eed152ef33e051c5e
-          HARDENING_PATCH_SHA256=cf2381f60caa483978b2895bcb37198cbf548a91d9a8fdf411a8f15eb79b7014
+          HARDENING_BASE_PATCH_SHA256=cf2381f60caa483978b2895bcb37198cbf548a91d9a8fdf411a8f15eb79b7014
+          HARDENING_FIX_PATCH_SHA256=6d07eb5cdf8b15091ec0bad3f670a31d0dd1b5dc69cf5b456b793cba8bda5084
           PACKAGE_VERSION=1.4.198-hardened.1
           TESTS=PASS
           TYPECHECK=PASS
