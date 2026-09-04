@@ -1,15 +1,16 @@
 diff --git a/config/scripts/linux-production-hardening.test.mjs b/config/scripts/linux-production-hardening.test.mjs
 new file mode 100644
-index 00000000..803946c0
+index 00000000..ab395a37
 --- /dev/null
 +++ b/config/scripts/linux-production-hardening.test.mjs
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,72 @@
 +import { mkdtempSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
 +import { join } from 'node:path'
 +import { tmpdir } from 'node:os'
 +import { spawnSync } from 'node:child_process'
 +import { fileURLToPath } from 'node:url'
 +import { describe, expect, it } from 'vitest'
++import electronBuilderConfig from '../electron-builder.config.cjs'
 +
 +const resource = (name) => new URL(`../../resources/linux/hardening/${name}`, import.meta.url)
 +
@@ -46,6 +47,24 @@ index 00000000..803946c0
 +    expect(call).toContain('/bin/true')
 +  })
 +
++  it('packages the hardening runtime and installs its user-systemd units', () => {
++    expect(electronBuilderConfig.linux.extraResources).toContainEqual({
++      from: 'resources/linux/hardening',
++      to: 'hardening'
++    })
++    const afterInstall = readFileSync(
++      new URL('../../resources/linux/packaging/after-install.sh', import.meta.url),
++      'utf8'
++    )
++    const afterRemove = readFileSync(
++      new URL('../../resources/linux/packaging/after-remove.sh', import.meta.url),
++      'utf8'
++    )
++    expect(afterInstall).toContain('orca-hardened.slice')
++    expect(afterInstall).toContain('systemctl --global enable orca-hardened-gc.timer')
++    expect(afterRemove).toContain('orca-hardened-gc.timer')
++  })
++
 +  it('provides a doctor and conservative stale-runtime janitor', () => {
 +    const doctor = readFileSync(resource('orca-hardened-doctor'), 'utf8')
 +    const janitor = readFileSync(resource('orca-hardened-gc'), 'utf8')
@@ -55,6 +74,85 @@ index 00000000..803946c0
 +    expect(janitor).toContain('--terminal-state reclaimable')
 +    expect(janitor).not.toContain('pkill -9')
 +    expect(janitor).not.toContain('killall')
++  })
++})
+diff --git a/src/main/daemon/daemon-terminal-admission-linux.test.ts b/src/main/daemon/daemon-terminal-admission-linux.test.ts
+new file mode 100644
+index 00000000..98c78b08
+--- /dev/null
++++ b/src/main/daemon/daemon-terminal-admission-linux.test.ts
+@@ -0,0 +1,73 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest'
++
++const assertLinuxTerminalAdmissionMock = vi.hoisted(() => vi.fn())
++
++vi.mock('./linux-terminal-admission-budget', () => ({
++  assertLinuxTerminalAdmission: assertLinuxTerminalAdmissionMock
++}))
++
++import { DaemonTerminalAdmission } from './daemon-terminal-admission'
++
++function createAdmission() {
++  const host = {
++    listSessions: vi.fn(() => []),
++    createOrAttach: vi.fn()
++  }
++  const admission = new DaemonTerminalAdmission({
++    host,
++    connections: {
++      get: vi.fn(() => ({ authenticatedPairEstablished: true, streamSocket: {} }))
++    },
++    endpoint: { hasLostOwnership: vi.fn(() => false) },
++    preparations: {},
++    attachments: {},
++    historySeedTransfers: {},
++    transientFactRelay: {},
++    streamDataBatcher: {},
++    log: {},
++    isAcceptingWork: () => true,
++    requestEndpointRetirement: vi.fn(),
++    reevaluateIdleShutdown: vi.fn()
++  } as never)
++  return { admission, host }
++}
++
++describe('DaemonTerminalAdmission Linux hardening', () => {
++  beforeEach(() => assertLinuxTerminalAdmissionMock.mockReset())
++
++  it('checks the aggregate budget before a new PTY reaches the host', async () => {
++    const { admission, host } = createAdmission()
++    assertLinuxTerminalAdmissionMock.mockImplementation(() => {
++      throw new Error('terminal_admission_memory_pressure')
++    })
++
++    await expect(
++      admission.createOrAttach('client-1', {
++        id: 'request-1',
++        type: 'createOrAttach',
++        payload: { sessionId: 'session-1', cols: 80, rows: 24, cwd: '/tmp' }
++      } as never)
++    ).rejects.toThrow('terminal_admission_memory_pressure')
++
++    expect(assertLinuxTerminalAdmissionMock).toHaveBeenCalledWith({
++      attachOnly: false,
++      liveSessions: 0,
++      pendingCreates: 0
++    })
++    expect(host.createOrAttach).not.toHaveBeenCalled()
++  })
++
++  it('never blocks an attach-only recovery on current memory pressure', async () => {
++    const { admission } = createAdmission()
++
++    await admission
++      .createOrAttach('client-1', {
++        id: 'request-1',
++        type: 'createOrAttach',
++        payload: { sessionId: 'session-1', cols: 80, rows: 24, cwd: '/tmp', attachOnly: true }
++      } as never)
++      .catch(() => {})
++
++    expect(assertLinuxTerminalAdmissionMock).not.toHaveBeenCalled()
 +  })
 +})
 diff --git a/src/main/daemon/linux-terminal-admission-budget.test.ts b/src/main/daemon/linux-terminal-admission-budget.test.ts
