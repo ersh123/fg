@@ -1,0 +1,69 @@
+From ab35c651245e51821b8d2c35bcb4c2fe6c71a8d4 Mon Sep 17 00:00:00 2001
+From: Orca Hardened Build <build@local>
+Date: Fri, 4 Sep 2026 05:31:06 +0000
+Subject: [PATCH] fix(linux): disable upstream updater in hardened builds
+
+---
+ src/main/updater/updater-setup.ts | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/src/main/updater/updater-setup.ts b/src/main/updater/updater-setup.ts
+index d60444d4..fc2d780e 100644
+--- a/src/main/updater/updater-setup.ts
++++ b/src/main/updater/updater-setup.ts
+@@ -21,6 +21,10 @@ import { AUTO_UPDATE_CHECK_INTERVAL_MS } from './updater-state'
+ import { UpdaterDownloadInstall } from './updater-download-install'
+ import type { UpdateInstallMode } from './updater-state'
+ 
++function isHardenedLinuxUpdateDisabled(): boolean {
++  return process.platform === 'linux' && process.env.ORCA_HARDENED_ACTIVE === '1'
++}
++
+ export type UpdaterSetupOptions = {
+   getLastUpdateCheckAt?: () => number | null
+   onBeforeQuit?: () => void | Promise<void>
+@@ -36,18 +40,32 @@ export type UpdaterSetupOptions = {
+ /** Initializes electron-updater and attaches lifecycle/event bridges. */
+ export class UpdaterSetup extends UpdaterDownloadInstall {
+   checkForUpdates(): void {
++    if (isHardenedLinuxUpdateDisabled()) {
++      this.sendStatus({ state: 'not-available', userInitiated: false })
++      return
++    }
+     this.checkForUpdatesInBackground()
+   }
+ 
+   checkForUpdatesFromMenu(options?: UpdateCheckOptions): void {
++    if (isHardenedLinuxUpdateDisabled()) {
++      this.sendStatus({ state: 'not-available', userInitiated: true })
++      return
++    }
+     super.checkForUpdatesFromMenu(options)
+   }
+ 
+   downloadUpdate(): void {
++    if (isHardenedLinuxUpdateDisabled()) {
++      return
++    }
+     super.downloadUpdate()
+   }
+ 
+   quitAndInstall(): void {
++    if (isHardenedLinuxUpdateDisabled()) {
++      return
++    }
+     super.quitAndInstall()
+   }
+ 
+@@ -119,6 +137,11 @@ export class UpdaterSetup extends UpdaterDownloadInstall {
+     this.updateInstallMode = opts?.installMode ?? 'interactive'
+     this.lastInstallDeferralVersion = { download: null, install: null }
+ 
++    if (isHardenedLinuxUpdateDisabled()) {
++      this.sendStatus({ state: 'not-available', userInitiated: false })
++      return
++    }
++
+     const serveHandoffFailure = getServeUpdateHandoffFailure()
+     if (serveHandoffFailure) {
+       recordUpdaterLifecycle(
