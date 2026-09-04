@@ -90,6 +90,8 @@ jobs:
 
       - name: Typecheck Node and renderer
         working-directory: orca
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: pnpm run typecheck:node && pnpm run typecheck:web
 
       - name: Check changed-code quality
@@ -99,7 +101,7 @@ jobs:
       - name: Build Linux x86_64 Debian package
         working-directory: orca
         env:
-          NODE_OPTIONS: --max-old-space-size=4096
+          NODE_OPTIONS: --max-old-space-size=8192
           ORCA_LOCAL_BUILD_VERSION: 1.4.198-hardened.1
           ORCA_BUILD_COMMIT: 67e22345daf882190911355eed152ef33e051c5e
         run: |
