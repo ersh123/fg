@@ -1,0 +1,46 @@
+diff --git a/resources/linux/packaging/after-remove.sh b/resources/linux/packaging/after-remove.sh
+index 83d30b02..3277914f 100755
+--- a/resources/linux/packaging/after-remove.sh
++++ b/resources/linux/packaging/after-remove.sh
+@@ -7,6 +7,8 @@ case "${1-}" in
+   *) exit 0 ;;
+ esac
+ 
++link="/usr/bin/orca-ide"
++
+ if command -v systemctl >/dev/null 2>&1; then
+   systemctl --global disable orca-hardened-gc.timer >/dev/null 2>&1 || true
+ fi
+@@ -24,8 +26,13 @@ remove_owned_link() {
+ for unit in orca-hardened.slice orca-hardened-gc.service orca-hardened-gc.timer; do
+   remove_owned_link "/usr/lib/systemd/user/$unit"
+ done
+-for command in orca-hardened orca-hardened-doctor orca-hardened-gc orca-ide; do
+-  remove_owned_link "/usr/bin/$command"
++for managed_link in \
++  "$link" \
++  /usr/bin/orca-hardened \
++  /usr/bin/orca-hardened-doctor \
++  /usr/bin/orca-hardened-gc
++do
++  remove_owned_link "$managed_link"
+ done
+ 
+ exit 0
+diff --git a/src/main/daemon/daemon-terminal-admission-linux.test.ts b/src/main/daemon/daemon-terminal-admission-linux.test.ts
+index 3f78e09d..61f78c24 100644
+--- a/src/main/daemon/daemon-terminal-admission-linux.test.ts
++++ b/src/main/daemon/daemon-terminal-admission-linux.test.ts
+@@ -44,9 +44,9 @@ describe('DaemonTerminalAdmission Linux hardening', () => {
+ 
+   it('checks the aggregate budget before a new PTY reaches the host', async () => {
+     const { admission, host } = createAdmission()
+-    assertLinuxTerminalAdmissionMock.mockImplementation(() => {
+-      throw new Error('terminal_admission_memory_pressure')
+-    })
++    assertLinuxTerminalAdmissionMock.mockRejectedValue(
++      new Error('terminal_admission_memory_pressure')
++    )
+ 
+     await expect(admission.createOrAttach('client-1', request('session-1'))).rejects.toThrow(
+       'terminal_admission_memory_pressure'
