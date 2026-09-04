@@ -28,10 +28,10 @@ index 83d30b02..3277914f 100755
  
  exit 0
 diff --git a/src/main/daemon/daemon-terminal-admission-linux.test.ts b/src/main/daemon/daemon-terminal-admission-linux.test.ts
-index 3f78e09d..61f78c24 100644
+index 3f78e09d..f0138bc1 100644
 --- a/src/main/daemon/daemon-terminal-admission-linux.test.ts
 +++ b/src/main/daemon/daemon-terminal-admission-linux.test.ts
-@@ -44,9 +44,9 @@ describe('DaemonTerminalAdmission Linux hardening', () => {
+@@ -44,11 +44,11 @@ describe('DaemonTerminalAdmission Linux hardening', () => {
  
    it('checks the aggregate budget before a new PTY reaches the host', async () => {
      const { admission, host } = createAdmission()
@@ -42,5 +42,7 @@ index 3f78e09d..61f78c24 100644
 +      new Error('terminal_admission_memory_pressure')
 +    )
  
-     await expect(admission.createOrAttach('client-1', request('session-1'))).rejects.toThrow(
+-    await expect(admission.createOrAttach('client-1', request('session-1'))).rejects.toThrow(
++    await expect(() => admission.createOrAttach('client-1', request('session-1'))).rejects.toThrow(
        'terminal_admission_memory_pressure'
+     )
