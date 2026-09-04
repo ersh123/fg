@@ -1,0 +1,34 @@
+diff --git a/config/scripts/linux-production-hardening.test.mjs b/config/scripts/linux-production-hardening.test.mjs
+index 51558f68..2a46a3a0 100644
+--- a/config/scripts/linux-production-hardening.test.mjs
++++ b/config/scripts/linux-production-hardening.test.mjs
+@@ -25,7 +25,7 @@ describe('Linux production hardening', () => {
+     const log = join(dir, 'calls.log')
+     for (const [name, body] of Object.entries({
+       'systemctl': `#!/bin/sh\nexit 0\n`,
+-      'systemd-run': `#!/bin/sh\nprintf '%s\\n' \"$*\" > ${JSON.stringify(log)}\nexit 0\n`
++      'systemd-run': `#!/bin/sh\nprintf '%s\\n' "$*" > ${JSON.stringify(log)}\nexit 0\n`
+     })) {
+       const path = join(dir, name)
+       writeFileSync(path, body)
+diff --git a/src/renderer/src/components/native-chat/use-native-chat-composer-attachments.ts b/src/renderer/src/components/native-chat/use-native-chat-composer-attachments.ts
+index 28f43bee..40283082 100644
+--- a/src/renderer/src/components/native-chat/use-native-chat-composer-attachments.ts
++++ b/src/renderer/src/components/native-chat/use-native-chat-composer-attachments.ts
+@@ -76,12 +76,10 @@ export function useNativeChatComposerAttachments({
+         previous: NativeChatComposerImageAttachment[]
+       ) => NativeChatComposerImageAttachment[]
+     ) => {
+-      setImageAttachments((prev) => {
+-        const next = updater(prev)
+-        imageAttachmentsRef.current = next
+-        writeNativeChatAttachmentCache(attachmentScopeKey, next)
+-        return next
+-      })
++      const next = updater(imageAttachmentsRef.current)
++      imageAttachmentsRef.current = next
++      writeNativeChatAttachmentCache(attachmentScopeKey, next)
++      setImageAttachments(next)
+     },
+     [attachmentScopeKey]
+   )
