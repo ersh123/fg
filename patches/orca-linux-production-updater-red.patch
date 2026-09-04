@@ -1,0 +1,68 @@
+diff --git a/src/main/updater.hardened-linux.test.ts b/src/main/updater.hardened-linux.test.ts
+new file mode 100644
+index 00000000..5de0b55d
+--- /dev/null
++++ b/src/main/updater.hardened-linux.test.ts
+@@ -0,0 +1,62 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import { loadUpdaterModule, warmUpdaterModule } from './updater-test-module-loader'
++
++const {
++  appMock,
++  autoUpdaterMock,
++  powerMonitorOnMock,
++  moduleFactories,
++  resetUpdaterMocks
++} = await vi.hoisted(async () => (await import('./updater-test-harness')).createUpdaterMocks())
++
++vi.mock('electron', () => moduleFactories.electron())
++vi.mock('electron-updater', () => moduleFactories.electronUpdater())
++vi.mock('./electron-updater-loader', () => moduleFactories.electronUpdaterLoader())
++vi.mock('@electron-toolkit/utils', () => moduleFactories.electronToolkitUtils())
++vi.mock('./ipc/pty', () => moduleFactories.ipcPty())
++vi.mock('./linux-update-package-type', () => moduleFactories.linuxUpdatePackageType())
++vi.mock('./updater-lifecycle-diagnostics', () => moduleFactories.updaterLifecycleDiagnostics())
++vi.mock('./updater-changelog', () => moduleFactories.updaterChangelog())
++vi.mock('./updater-nudge', () => moduleFactories.updaterNudge())
++vi.mock('./update-install-exit-watchdog', () => moduleFactories.updateInstallExitWatchdog())
++vi.mock('./updater-prerelease-feed', () => moduleFactories.updaterPrereleaseFeed())
++vi.mock('./local-builds/local-build-switch', () => moduleFactories.localBuildSwitch())
++vi.mock('./local-builds/local-build-feed-server', () => moduleFactories.localBuildFeedServer())
++
++warmUpdaterModule()
++
++describe('hardened Linux update policy', () => {
++  beforeEach(() => {
++    resetUpdaterMocks()
++    vi.stubEnv('ORCA_HARDENED_ACTIVE', '1')
++  })
++
++  afterEach(() => {
++    vi.unstubAllEnvs()
++  })
++
++  it('does not initialize or contact the upstream desktop updater', async () => {
++    const send = vi.fn()
++    const updater = await loadUpdaterModule()
++
++    updater.setupAutoUpdater({ webContents: { send } } as never, {
++      getLastUpdateCheckAt: () => null
++    })
++    updater.checkForUpdates()
++    updater.checkForUpdatesFromMenu()
++    updater.downloadUpdate()
++    updater.quitAndInstall()
++
++    expect(autoUpdaterMock.setFeedURL).not.toHaveBeenCalled()
++    expect(autoUpdaterMock.checkForUpdates).not.toHaveBeenCalled()
++    expect(autoUpdaterMock.downloadUpdate).not.toHaveBeenCalled()
++    expect(autoUpdaterMock.quitAndInstall).not.toHaveBeenCalled()
++    expect(powerMonitorOnMock).not.toHaveBeenCalled()
++    expect(appMock.on).not.toHaveBeenCalled()
++    expect(updater.getUpdateStatus()).toEqual({ state: 'not-available', userInitiated: true })
++    expect(send).toHaveBeenLastCalledWith('updater:status', {
++      state: 'not-available',
++      userInitiated: true
++    })
++  })
++})
