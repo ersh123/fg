@@ -13,9 +13,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify-and-build:
+  verify-build-install:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
+
     steps:
       - name: Checkout build control
         uses: actions/checkout@v4
@@ -30,8 +31,15 @@ jobs:
           path: orca
           fetch-depth: 1
 
-      - name: Apply Linux hardening patch
-        run: git -C orca apply --check ../control/patches/orca-linux-production.patch && git -C orca apply ../control/patches/orca-linux-production.patch
+      - name: Decode and apply reviewed Linux hardening patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d control/patches/orca-linux-production-green.patch.gz.b64 | gzip -dc > "$RUNNER_TEMP/orca-linux-production.patch"
+          printf '%s  %s\n' 'cf2381f60caa483978b2895bcb37198cbf548a91d9a8fdf411a8f15eb79b7014' "$RUNNER_TEMP/orca-linux-production.patch" | sha256sum --check --strict
+          git -C orca apply --check "$RUNNER_TEMP/orca-linux-production.patch"
+          git -C orca apply "$RUNNER_TEMP/orca-linux-production.patch"
+          git -C orca diff --check
 
       - name: Set up Node 24
         uses: actions/setup-node@v4
@@ -44,49 +52,167 @@ jobs:
           version: 12.0.0
           run_install: false
 
-      - name: Install build dependencies
+      - name: Install Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            at-spi2-core \
+            binutils \
+            gir1.2-atspi-2.0 \
+            python3-gi \
+            rpm \
+            xauth \
+            xclip \
+            xdotool \
+            xvfb
+
+      - name: Install dependencies
         working-directory: orca
         run: pnpm install --frozen-lockfile
 
-      - name: Run hardened regression tests
+      - name: Run Linux hardening regression suite
         working-directory: orca
-        run: >-
-          pnpm exec vitest run --config config/vitest.config.ts
-          src/main/daemon/terminal-session-teardown.test.ts
-          src/main/daemon/linux-terminal-admission-budget.test.ts
-          src/renderer/src/components/native-chat/use-native-chat-composer-attachments.test.tsx
-          config/scripts/linux-production-hardening.test.mjs
+        run: |
+          pnpm exec vitest run --config config/vitest.config.ts \
+            src/main/daemon/terminal-session-teardown.test.ts \
+            src/main/daemon/linux-terminal-admission-budget.test.ts \
+            src/main/daemon/daemon-terminal-admission-linux.test.ts \
+            src/renderer/src/components/native-chat/use-native-chat-composer-attachments.test.tsx \
+            config/scripts/linux-production-hardening.test.mjs \
+            config/scripts/linux-package-maintainer-scripts.test.mjs \
+            src/main/cli/packaged-cli-assets.test.ts
 
       - name: Typecheck Node and renderer
         working-directory: orca
         run: pnpm run typecheck:node && pnpm run typecheck:web
 
-      - name: Build Linux desktop
+      - name: Check changed-code quality
+        working-directory: orca
+        run: pnpm run check:code-quality:changed
+
+      - name: Build Linux x86_64 Debian package
         working-directory: orca
         env:
-          ORCA_LOCAL_BUILD_VERSION: 1.4.178-rc.2.hardened.1
+          NODE_OPTIONS: --max-old-space-size=4096
+          ORCA_LOCAL_BUILD_VERSION: 1.4.198-hardened.1
           ORCA_BUILD_COMMIT: 67e22345daf882190911355eed152ef33e051c5e
         run: |
           pnpm run build:desktop
           pnpm run ensure:electron-runtime
           pnpm exec electron-builder --config config/electron-builder.config.cjs --linux deb --x64 --publish never
 
-      - name: Locate and inspect Debian package
+      - name: Verify packaged native runtime on glibc 2.31
         working-directory: orca
         run: |
+          node -e "require('./config/scripts/verify-linux-glibc-floor.cjs').verifyLinuxGlibcFloor('dist/linux-unpacked/resources', { targetArch: 'x64' })"
+          node config/scripts/run-linux-packaged-node-pty-floor-smoke.mjs --app-dir dist/linux-unpacked
+
+      - name: Inspect Debian package
+        id: package
+        working-directory: orca
+        shell: bash
+        run: |
+          set -euo pipefail
           deb="$(find dist -maxdepth 2 -type f -name '*.deb' -print -quit)"
           test -n "$deb"
-          dpkg-deb --info "$deb"
+          test "$(dpkg-deb -f "$deb" Package)" = 'orca-ide'
+          test "$(dpkg-deb -f "$deb" Architecture)" = 'amd64'
+          test "$(dpkg-deb -f "$deb" Version)" = '1.4.198-hardened.1'
+          dpkg-deb --info "$deb" | tee dist/deb-info.txt
           dpkg-deb --contents "$deb" | tee dist/deb-contents.txt
-          printf '%s\n' "$deb" > dist/deb-path.txt
+          dpkg-deb -f "$deb" Package Version Architecture Depends | tee dist/deb-metadata.txt
+          sha256sum "$deb" | tee dist/SHA256SUMS
+          printf 'deb=%s\n' "$(realpath "$deb")" >> "$GITHUB_OUTPUT"
 
-      - name: Upload Linux package
+      - name: Install package and verify production wiring
+        shell: bash
+        env:
+          DEB: ${{ steps.package.outputs.deb }}
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$DEB"
+
+          test -x /opt/Orca/orca-ide
+          test -x /usr/bin/orca-hardened
+          test -x /usr/bin/orca-hardened-doctor
+          test -x /usr/bin/orca-hardened-gc
+          test -x /usr/bin/orca-ide
+          test -L /usr/lib/systemd/user/orca-hardened.slice
+          test -L /usr/lib/systemd/user/orca-hardened-gc.service
+          test -L /usr/lib/systemd/user/orca-hardened-gc.timer
+          grep -F 'Exec=/usr/bin/orca-hardened' /usr/share/applications/orca-ide.desktop
+
+          SYSTEMD_UNIT_PATH='/usr/lib/systemd/user:/lib/systemd/user:/usr/lib/systemd/system:/lib/systemd/system' \
+            systemd-analyze --user verify \
+              /usr/lib/systemd/user/orca-hardened.slice \
+              /usr/lib/systemd/user/orca-hardened-gc.service \
+              /usr/lib/systemd/user/orca-hardened-gc.timer
+
+          /usr/bin/orca-hardened-doctor --json | tee orca/dist/doctor.json
+          python3 - <<'PY'
+          import json
+          value = json.load(open('orca/dist/doctor.json'))
+          assert value['cgroupV2'] is True
+          assert value['sliceInstalled'] is True
+          assert value['launcherInstalled'] is True
+          PY
+
+          timeout 60s /usr/bin/orca-ide --help | tee orca/dist/cli-help.txt
+          timeout 30s xvfb-run -a /usr/bin/orca-hardened --version | tee orca/dist/gui-version.txt
+
+      - name: Verify uninstall preserves user data and removes managed links
+        shell: bash
+        env:
+          DEB: ${{ steps.package.outputs.deb }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/orca"
+          printf 'preserve\n' > "$HOME/.config/orca/hardened-uninstall-marker"
+          package="$(dpkg-deb -f "$DEB" Package)"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get remove -y "$package"
+          test -f "$HOME/.config/orca/hardened-uninstall-marker"
+          test ! -L /usr/bin/orca-hardened
+          test ! -L /usr/bin/orca-hardened-doctor
+          test ! -L /usr/bin/orca-hardened-gc
+          test ! -L /usr/lib/systemd/user/orca-hardened.slice
+          test ! -L /usr/lib/systemd/user/orca-hardened-gc.service
+          test ! -L /usr/lib/systemd/user/orca-hardened-gc.timer
+
+      - name: Write release gate record
+        if: success()
+        working-directory: orca
+        run: |
+          cat > dist/PRODUCTION-GATE.txt <<'EOF'
+          VERDICT=PRODUCTION_READY_LINUX_AMD64
+          SOURCE_SHA=67e22345daf882190911355eed152ef33e051c5e
+          HARDENING_PATCH_SHA256=cf2381f60caa483978b2895bcb37198cbf548a91d9a8fdf411a8f15eb79b7014
+          PACKAGE_VERSION=1.4.198-hardened.1
+          TESTS=PASS
+          TYPECHECK=PASS
+          CODE_QUALITY=PASS
+          BUILD=PASS
+          GLIBC_2_31_FLOOR=PASS
+          DEB_INSTALL=PASS
+          CLI_SMOKE=PASS
+          GUI_SMOKE=PASS
+          UNINSTALL_ROLLBACK=PASS
+          USER_DATA_PRESERVATION=PASS
+          EOF
+
+      - name: Upload verified Linux release
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: orca-hardened-linux-amd64
+          name: orca-hardened-linux-amd64-1.4.198-hardened.1
           path: |
             orca/dist/*.deb
+            orca/dist/SHA256SUMS
+            orca/dist/PRODUCTION-GATE.txt
+            orca/dist/deb-info.txt
             orca/dist/deb-contents.txt
-            orca/dist/deb-path.txt
+            orca/dist/deb-metadata.txt
+            orca/dist/doctor.json
+            orca/dist/cli-help.txt
+            orca/dist/gui-version.txt
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
