@@ -1,0 +1,98 @@
+#!/bin/sh
+# Runs the desktop and every process it owns inside a bounded user cgroup.
+set -eu
+
+MIB=$((1024 * 1024))
+GIB=$((1024 * 1024 * 1024))
+
+positive_integer() {
+  case "${1-}" in
+    '' | *[!0-9]* | 0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+resolve_app() {
+  if [ -n "${ORCA_HARDENED_APP_EXECUTABLE-}" ]; then
+    printf '%s\n' "$ORCA_HARDENED_APP_EXECUTABLE"
+    return
+  fi
+  for candidate in /opt/Orca/orca-ide /opt/orca-ide/orca-ide /opt/orca/orca-ide; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  return 1
+}
+
+app="$(resolve_app || true)"
+if [ -z "$app" ] || [ ! -x "$app" ]; then
+  echo 'Orca Hardened executable was not found.' >&2
+  exit 127
+fi
+
+if [ "${ORCA_HARDENED_SCOPE_DISABLED-}" = '1' ]; then
+  exec "$app" "$@"
+fi
+
+meminfo="${ORCA_HARDENED_MEMINFO_PATH:-/proc/meminfo}"
+total_kib="$(awk '$1 == "MemTotal:" { print $2; exit }' "$meminfo" 2>/dev/null || true)"
+if ! positive_integer "$total_kib"; then
+  exec "$app" "$@"
+fi
+
+total_bytes=$((total_kib * 1024))
+reserve_bytes=$((total_bytes / 5))
+[ "$reserve_bytes" -lt $((2 * GIB)) ] && reserve_bytes=$((2 * GIB))
+[ "$reserve_bytes" -gt $((8 * GIB)) ] && reserve_bytes=$((8 * GIB))
+max_bytes=$((total_bytes - reserve_bytes))
+[ "$max_bytes" -lt "$GIB" ] && max_bytes="$GIB"
+high_bytes=$((max_bytes * 85 / 100))
+swap_bytes="$GIB"
+tasks_max=1024
+
+if positive_integer "${ORCA_HARDENED_MEMORY_MAX_MB-}"; then
+  max_bytes=$((ORCA_HARDENED_MEMORY_MAX_MB * MIB))
+fi
+if positive_integer "${ORCA_HARDENED_MEMORY_HIGH_MB-}"; then
+  high_bytes=$((ORCA_HARDENED_MEMORY_HIGH_MB * MIB))
+else
+  high_bytes=$((max_bytes * 85 / 100))
+fi
+if [ "$high_bytes" -gt "$max_bytes" ]; then
+  high_bytes="$max_bytes"
+fi
+if positive_integer "${ORCA_HARDENED_SWAP_MAX_MB-}"; then
+  swap_bytes=$((ORCA_HARDENED_SWAP_MAX_MB * MIB))
+fi
+if positive_integer "${ORCA_HARDENED_TASKS_MAX-}"; then
+  tasks_max="$ORCA_HARDENED_TASKS_MAX"
+fi
+
+if command -v systemd-run >/dev/null 2>&1 &&
+  command -v systemctl >/dev/null 2>&1 &&
+  systemctl --user show-environment >/dev/null 2>&1; then
+  uid="$(id -u)"
+  probe_unit="orca-hardened-probe-${uid}-$$"
+  if systemd-run --user --scope --collect --quiet --wait \
+    --unit="$probe_unit" \
+    --property=MemoryAccounting=yes \
+    --property="MemoryHigh=$high_bytes" \
+    --property="MemoryMax=$max_bytes" \
+    --property="MemorySwapMax=$swap_bytes" \
+    --property="TasksMax=$tasks_max" \
+    -- true >/dev/null 2>&1; then
+    unit="orca-hardened-${uid}-$$"
+    exec systemd-run --user --scope --collect --quiet \
+      --unit="$unit" \
+      --property=MemoryAccounting=yes \
+      --property="MemoryHigh=$high_bytes" \
+      --property="MemoryMax=$max_bytes" \
+      --property="MemorySwapMax=$swap_bytes" \
+      --property="TasksMax=$tasks_max" \
+      -- "$app" "$@"
+  fi
+fi
+
+exec "$app" "$@"

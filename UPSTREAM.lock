@@ -1,0 +1,8 @@
+repository=stablyai/orca
+commit=67e22345daf882190911355eed152ef33e051c5e
+hardening_harness_commit=afaa3421e392361db5fb1142e9be4c017095af6e
+verified_build_run=33943045541
+version=26.9.5-hardened.3
+platform=linux
+architecture=amd64
+package=deb

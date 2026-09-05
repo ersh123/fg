@@ -1,0 +1,12 @@
+product=Orca Linux Hardened
+version=26.9.5-hardened.3
+architecture=amd64
+package=deb
+upstream_sha=67e22345daf882190911355eed152ef33e051c5e
+hardening_harness_sha=afaa3421e392361db5fb1142e9be4c017095af6e
+terminal_descendant_reaping=true
+linux_spawn_admission=true
+settled_worker_auto_release=true
+desktop_cgroup_boundary=true
+appimage_built=false
+rpm_built=false
