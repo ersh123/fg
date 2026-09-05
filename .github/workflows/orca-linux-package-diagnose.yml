@@ -1,0 +1,113 @@
+name: Diagnose Orca Linux Hardened Packaging
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [orca-hardening-ci]
+    paths:
+      - '.github/workflows/orca-linux-package-diagnose.yml'
+
+permissions:
+  contents: read
+
+env:
+  ORCA_UPSTREAM_SHA: 67e22345daf882190911355eed152ef33e051c5e
+  ORCA_HARDENED_VERSION: 26.9.5-hardened.2
+
+jobs:
+  diagnose-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/checkout@v4
+        with:
+          repository: stablyai/orca
+          ref: ${{ env.ORCA_UPSTREAM_SHA }}
+          path: source
+          fetch-depth: 1
+      - name: Apply complete hardening stack
+        run: |
+          set -euo pipefail
+          base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1.patch
+          cd source
+          git apply /tmp/task1.patch
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.test.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/daemon-server-linux-admission.test.ts src/main/daemon/
+          python ../harness/orca-hardening/scripts/apply-task2-wiring.py
+          cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.ts src/main/runtime/orchestration/
+          cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.test.ts src/main/runtime/orchestration/
+          cp ../harness/orca-hardening/source/src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts src/main/runtime/rpc/methods/
+          python ../harness/orca-hardening/scripts/apply-task3-wiring.py
+          cp ../harness/orca-hardening/source/resources/linux/bin/orca-hardened-desktop resources/linux/bin/
+          cp ../harness/orca-hardening/source/resources/linux/packaging/after-install.sh resources/linux/packaging/
+          cp ../harness/orca-hardening/source/resources/linux/packaging/after-remove.sh resources/linux/packaging/
+          cp ../harness/orca-hardening/source/config/scripts/linux-hardened-launcher.test.mjs config/scripts/
+          chmod +x resources/linux/bin/orca-hardened-desktop resources/linux/packaging/after-install.sh resources/linux/packaging/after-remove.sh
+          python ../harness/orca-hardening/scripts/apply-task4-packaging.py
+          git diff --check
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.0.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+      - name: Install package tooling
+        run: sudo apt-get update && sudo apt-get install -y cpio rpm xvfb tree
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - name: Build desktop package inputs
+        working-directory: source
+        run: pnpm run build:desktop
+      - name: Prepare Electron native runtime
+        working-directory: source
+        run: pnpm run ensure:electron-runtime
+      - name: Package x64 DEB and capture full log
+        id: package
+        continue-on-error: true
+        working-directory: source
+        env:
+          ORCA_LOCAL_BUILD_VERSION: ${{ env.ORCA_HARDENED_VERSION }}
+          ORCA_BUILD_COMMIT: ${{ github.sha }}
+          ORCA_REUSE_PREPARED_NATIVE_RUNTIME: '1'
+        run: |
+          set -o pipefail
+          pnpm exec electron-builder --config config/electron-builder.config.cjs --linux deb --x64 --publish never 2>&1 | tee ../electron-builder.log
+      - name: Capture package diagnostics
+        if: always()
+        run: |
+          set +e
+          {
+            echo "package_outcome=${{ steps.package.outcome }}"
+            echo "node=$(node --version)"
+            echo "pnpm=$(pnpm --version)"
+            echo "disk:"; df -h
+            echo "dist tree:"; find source/dist -maxdepth 3 -printf '%y %s %p\n' 2>&1 | sort
+            echo "matching debs:"; find source/dist -maxdepth 2 -type f -name '*.deb' -print
+            echo "package metadata:"; node -e "const p=require('./source/package.json'); console.log(JSON.stringify({name:p.name,version:p.version},null,2))"
+            echo "builder config Exec:"; grep -n "orca-hardened-desktop\|extraResources\|desktop:" source/config/electron-builder.config.cjs
+          } > package-diagnostics.txt 2>&1
+          if [ -f source/dist/builder-effective-config.yaml ]; then cp source/dist/builder-effective-config.yaml .; fi
+          if [ -f source/dist/builder-debug.yml ]; then cp source/dist/builder-debug.yml .; fi
+      - name: Upload diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-linux-package-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            electron-builder.log
+            package-diagnostics.txt
+            builder-effective-config.yaml
+            builder-debug.yml
+      - name: Fail when packaging failed
+        if: steps.package.outcome != 'success'
+        run: exit 1
