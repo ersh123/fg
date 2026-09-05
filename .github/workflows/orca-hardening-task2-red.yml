@@ -1,19 +1,17 @@
-name: Orca Linux Admission RED
+name: Orca Linux Admission Integration RED
 
 on:
   push:
     branches: [orca-hardening-ci]
     paths:
       - '.github/workflows/orca-hardening-task2-red.yml'
-      - 'orca-hardening/patches/task1-green.patch.gz.b64'
-      - 'orca-hardening/patches/task2-red.patch.gz.b64'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  linux-admission-red:
+  linux-admission-integration-red:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -25,14 +23,14 @@ jobs:
           repository: stablyai/orca
           ref: 67e22345daf882190911355eed152ef33e051c5e
           path: source
-      - name: Apply completed teardown and admission RED tests
+      - name: Apply completed layers and integration RED test
         run: |
           base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1.patch
-          base64 -d harness/orca-hardening/patches/task2-red.patch.gz.b64 | gzip -d > /tmp/task2-red.patch
           cd source
           git apply /tmp/task1.patch
-          git apply --check /tmp/task2-red.patch
-          git apply /tmp/task2-red.patch
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.test.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/daemon-server-linux-admission.test.ts src/main/daemon/
       - uses: pnpm/action-setup@v4
         with:
           version: 12.0.0
@@ -45,6 +43,6 @@ jobs:
       - name: Install dependencies
         working-directory: source
         run: pnpm install --frozen-lockfile
-      - name: Run admission RED tests
+      - name: Run integration RED test
         working-directory: source
-        run: pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/linux-terminal-spawn-admission.test.ts
+        run: pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/daemon-server-linux-admission.test.ts
