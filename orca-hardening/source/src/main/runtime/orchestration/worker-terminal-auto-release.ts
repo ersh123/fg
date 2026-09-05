@@ -22,10 +22,7 @@ export type WorkerTerminalAutoReleaseDisposition =
   | 'failed'
 
 export type SettledWorkerTerminalAutoReleaseOptions = {
-  db: Pick<
-    OrchestrationDb,
-    'getWorkerTerminalResourceByOwner' | 'requestWorkerTerminalRelease'
-  >
+  db: OrchestrationDb
   runtime: OrcaRuntimeService
   lifecycle: LifecycleReconciliationResult
   reconcile?: ReconcileWorkerTerminalReleases
