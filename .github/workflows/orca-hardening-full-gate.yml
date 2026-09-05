@@ -1,0 +1,75 @@
+name: Orca Linux Hardened Full Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [orca-hardening-ci]
+    paths:
+      - '.github/workflows/orca-hardening-full-gate.yml'
+      - 'orca-hardening/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orca-linux-hardened-full-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - uses: actions/checkout@v4
+        with:
+          repository: stablyai/orca
+          ref: 67e22345daf882190911355eed152ef33e051c5e
+          path: source
+      - name: Apply complete Linux hardening stack
+        run: |
+          set -euo pipefail
+          base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1.patch
+          cd source
+          git apply /tmp/task1.patch
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.test.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/daemon-server-linux-admission.test.ts src/main/daemon/
+          python ../harness/orca-hardening/scripts/apply-task2-wiring.py
+          cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.ts src/main/runtime/orchestration/
+          cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.test.ts src/main/runtime/orchestration/
+          cp ../harness/orca-hardening/source/src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts src/main/runtime/rpc/methods/
+          python ../harness/orca-hardening/scripts/apply-task3-wiring.py
+          cp ../harness/orca-hardening/source/resources/linux/bin/orca-hardened-desktop resources/linux/bin/
+          cp ../harness/orca-hardening/source/resources/linux/packaging/after-install.sh resources/linux/packaging/
+          cp ../harness/orca-hardening/source/resources/linux/packaging/after-remove.sh resources/linux/packaging/
+          cp ../harness/orca-hardening/source/config/scripts/linux-hardened-launcher.test.mjs config/scripts/
+          chmod +x resources/linux/bin/orca-hardened-desktop resources/linux/packaging/after-install.sh resources/linux/packaging/after-remove.sh
+          python ../harness/orca-hardening/scripts/apply-task4-packaging.py
+          git diff --check
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.0.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+      - name: Full test suite
+        working-directory: source
+        run: pnpm test
+      - name: Full typecheck
+        working-directory: source
+        run: pnpm tc
+      - name: Full lint
+        working-directory: source
+        run: pnpm lint
+      - name: Linux launcher contracts
+        working-directory: source
+        run: node --test config/scripts/linux-hardened-launcher.test.mjs
