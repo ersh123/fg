@@ -1,0 +1,142 @@
+name: Bundle Orca Linux Hardened Source
+
+on:
+  push:
+    branches: [orca-hardening-ci]
+    paths:
+      - '.github/workflows/orca-linux-source-bundle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ORCA_UPSTREAM_SHA: 67e22345daf882190911355eed152ef33e051c5e
+  ORCA_HARDENED_VERSION: 26.9.5-hardened.3
+
+jobs:
+  bundle-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout hardening harness
+        uses: actions/checkout@v4
+        with:
+          path: harness
+
+      - name: Checkout pinned Orca source
+        uses: actions/checkout@v4
+        with:
+          repository: stablyai/orca
+          ref: ${{ env.ORCA_UPSTREAM_SHA }}
+          path: source
+          fetch-depth: 1
+
+      - name: Apply the exact released Linux hardening
+        run: |
+          set -euo pipefail
+          base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1.patch
+          cd source
+          git switch -c hardening/linux-production
+          git apply --check /tmp/task1.patch
+          git apply /tmp/task1.patch
+
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.test.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/daemon-server-linux-admission.test.ts src/main/daemon/
+          python ../harness/orca-hardening/scripts/apply-task2-wiring.py
+
+          cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.ts src/main/runtime/orchestration/
+          cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.test.ts src/main/runtime/orchestration/
+          cp ../harness/orca-hardening/source/src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts src/main/runtime/rpc/methods/
+          python ../harness/orca-hardening/scripts/apply-task3-wiring.py
+
+          cp ../harness/orca-hardening/source/resources/linux/bin/orca-hardened-desktop resources/linux/bin/
+          cp ../harness/orca-hardening/source/resources/linux/packaging/after-install.sh resources/linux/packaging/
+          cp ../harness/orca-hardening/source/resources/linux/packaging/after-remove.sh resources/linux/packaging/
+          cp ../harness/orca-hardening/source/config/scripts/linux-hardened-launcher.test.mjs config/scripts/
+          chmod +x resources/linux/bin/orca-hardened-desktop resources/linux/packaging/after-install.sh resources/linux/packaging/after-remove.sh
+          python ../harness/orca-hardening/scripts/apply-task4-packaging.py
+
+          mkdir -p docs/hardening
+          cat > docs/hardening/LINUX-PRODUCTION.md <<'EOF'
+          # Orca Linux Hardened
+
+          This branch is the reproducible source for `26.9.5-hardened.3`, based on upstream commit `67e22345daf882190911355eed152ef33e051c5e`.
+
+          ## Production hardening
+
+          - Every daemon-owned terminal uses descendant-aware teardown, including agents typed manually into a plain shell.
+          - Linux terminal and agent starts are admitted against terminal count, agent count, concurrent starts, and `/proc/meminfo` `MemAvailable` reserve.
+          - Settled orchestration workers request release through Orca's existing ownership-aware release state machine.
+          - The Debian package installs `orca-hardened-desktop`, which launches the app in a transient systemd user scope with memory, swap, task, and OOM boundaries. A direct-exec fallback remains for sessions without user systemd.
+          - This release targets Linux amd64 Debian packages only. AppImage and RPM are intentionally excluded.
+
+          ## Build
+
+          ```bash
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build:desktop
+          pnpm run ensure:electron-runtime
+          ORCA_LOCAL_BUILD_VERSION=26.9.5-hardened.3 \
+            ORCA_REUSE_PREPARED_NATIVE_RUNTIME=1 \
+            pnpm exec electron-builder --config config/electron-builder.config.cjs --linux deb --x64 --publish never
+          ```
+
+          ## Runtime overrides
+
+          Daemon admission: `ORCA_LINUX_MAX_TERMINALS`, `ORCA_LINUX_MAX_AGENTS`, `ORCA_LINUX_MAX_CONCURRENT_STARTS`, `ORCA_LINUX_MEMORY_RESERVE_MB`, `ORCA_LINUX_TERMINAL_RESERVATION_MB`, `ORCA_LINUX_AGENT_RESERVATION_MB`.
+
+          Desktop scope: `ORCA_HARDENED_MEMORY_HIGH_MB`, `ORCA_HARDENED_MEMORY_MAX_MB`, `ORCA_HARDENED_SWAP_MAX_MB`, `ORCA_HARDENED_TASKS_MAX`.
+          EOF
+
+          git diff --check
+          git add -A
+          git config user.name 'Orca Linux Hardening'
+          git config user.email 'noreply@example.invalid'
+          git commit -m 'feat(linux): production hardening release 26.9.5-hardened.3'
+
+      - name: Create complete patch, bundle and source archive
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cd source
+          git diff --binary "$ORCA_UPSTREAM_SHA"..HEAD > ../out/orca-linux-hardened-complete.patch
+          git bundle create ../out/orca-linux-hardened-${ORCA_HARDENED_VERSION}.bundle hardening/linux-production
+          git archive --format=tar.gz --prefix=orca-linux-hardened-${ORCA_HARDENED_VERSION}/ -o ../out/orca-linux-hardened-source-${ORCA_HARDENED_VERSION}.tar.gz HEAD
+          printf 'upstream_sha=%s\nrelease_commit=%s\nversion=%s\narchitecture=amd64\npackage=deb-only\n' \
+            "$ORCA_UPSTREAM_SHA" "$(git rev-parse HEAD)" "$ORCA_HARDENED_VERSION" > ../out/SOURCE-MANIFEST.txt
+          cd ../out
+          sha256sum orca-linux-hardened-complete.patch orca-linux-hardened-${ORCA_HARDENED_VERSION}.bundle orca-linux-hardened-source-${ORCA_HARDENED_VERSION}.tar.gz > SOURCE-SHA256SUMS
+
+      - name: Verify every source representation
+        run: |
+          set -euxo pipefail
+          git clone --quiet out/orca-linux-hardened-${ORCA_HARDENED_VERSION}.bundle /tmp/from-bundle
+          test -z "$(git -C /tmp/from-bundle status --porcelain)"
+          test -f /tmp/from-bundle/src/main/daemon/linux-terminal-spawn-admission.ts
+          test -f /tmp/from-bundle/src/main/runtime/orchestration/worker-terminal-auto-release.ts
+          test -x /tmp/from-bundle/resources/linux/bin/orca-hardened-desktop
+
+          mkdir /tmp/from-tar
+          tar -xzf out/orca-linux-hardened-source-${ORCA_HARDENED_VERSION}.tar.gz -C /tmp/from-tar
+          tarroot=/tmp/from-tar/orca-linux-hardened-${ORCA_HARDENED_VERSION}
+          test -f "$tarroot/src/main/daemon/linux-terminal-spawn-admission.ts"
+          test -f "$tarroot/src/main/runtime/orchestration/worker-terminal-auto-release.ts"
+          test -x "$tarroot/resources/linux/bin/orca-hardened-desktop"
+          test -f "$tarroot/docs/hardening/LINUX-PRODUCTION.md"
+
+          git -C source worktree add --detach /tmp/patch-check "$ORCA_UPSTREAM_SHA"
+          git -C /tmp/patch-check apply --check "$GITHUB_WORKSPACE/out/orca-linux-hardened-complete.patch"
+          git bundle verify out/orca-linux-hardened-${ORCA_HARDENED_VERSION}.bundle
+          (cd out && sha256sum -c SOURCE-SHA256SUMS)
+
+      - name: Upload complete source bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-linux-hardened-source-${{ env.ORCA_HARDENED_VERSION }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          path: out/*
