@@ -1,0 +1,257 @@
+name: Finalize Orca Linux Hardened Release v2
+
+on:
+  push:
+    branches: [orca-hardening-ci]
+    paths:
+      - '.github/workflows/finalize-orca-linux-hardened-release-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: finalize-orca-linux-hardened-release-v2
+  cancel-in-progress: false
+
+env:
+  VERSION: 26.9.5-hardened.3
+  SOURCE_BRANCH: orca-linux-hardened-source
+  SOURCE_SHA: 864364aaf356061ed7922a3ec5e00dacd780e3f4
+  UPSTREAM_SHA: 67e22345daf882190911355eed152ef33e051c5e
+  HARDENING_HARNESS_SHA: afaa3421e392361db5fb1142e9be4c017095af6e
+  VERIFIED_BUILD_RUN_ID: '33943045541'
+  VERIFIED_ARTIFACT_NAME: orca-linux-hardened-26.9.5-hardened.3-amd64
+  RELEASE_TAG: orca-linux-hardened-v26.9.5-hardened.3
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout exact hardened source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_BRANCH }}
+          path: source
+          fetch-depth: 0
+
+      - name: Verify source identity and Linux hardening payload
+        run: |
+          set -euxo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C source branch --show-current)" = "$SOURCE_BRANCH"
+          grep -Fx "commit=${UPSTREAM_SHA}" source/UPSTREAM.lock
+          grep -Fx "hardening_harness_commit=${HARDENING_HARNESS_SHA}" source/UPSTREAM.lock
+          grep -Fx "verified_build_run=${VERIFIED_BUILD_RUN_ID}" source/UPSTREAM.lock
+          grep -Fx "version=${VERSION}" source/UPSTREAM.lock
+          grep -Fx 'platform=linux' source/UPSTREAM.lock
+          grep -Fx 'architecture=amd64' source/UPSTREAM.lock
+          grep -Fx 'package=deb' source/UPSTREAM.lock
+          test -f source/src/main/daemon/linux-terminal-spawn-admission.ts
+          test -f source/src/main/daemon/linux-terminal-spawn-admission.test.ts
+          test -f source/src/main/daemon/daemon-server-linux-admission.test.ts
+          test -f source/src/main/runtime/orchestration/worker-terminal-auto-release.ts
+          test -f source/src/main/runtime/orchestration/worker-terminal-auto-release.test.ts
+          test -f source/src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts
+          test -x source/resources/linux/bin/orca-hardened-desktop
+          test -x source/resources/linux/packaging/after-install.sh
+          test -x source/resources/linux/packaging/after-remove.sh
+          test -f source/config/scripts/linux-hardened-launcher.test.mjs
+          test -f source/INSTALL-LINUX.md
+          test -f source/BUILD-MANIFEST.txt
+          bash -n source/resources/linux/bin/orca-hardened-desktop
+          bash -n source/resources/linux/packaging/after-install.sh
+          bash -n source/resources/linux/packaging/after-remove.sh
+          test -z "$(git -C source status --porcelain)"
+
+      - name: Download exact successful Linux build
+        run: |
+          set -euo pipefail
+          mkdir -p verified-artifact
+          gh run download "$VERIFIED_BUILD_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$VERIFIED_ARTIFACT_NAME" \
+            --dir verified-artifact
+          find verified-artifact -maxdepth 6 -type f -printf '%s %p\n' | sort
+
+      - name: Authenticate build artifact using its own checksum manifest
+        run: |
+          set -euo pipefail
+          deb="$(find verified-artifact -type f -name "orca-ide_${VERSION}_amd64.deb" -print -quit)"
+          patch="$(find verified-artifact -type f -name 'orca-linux-hardened.patch' -print -quit)"
+          sums="$(find verified-artifact -type f -name 'SHA256SUMS' -print -quit)"
+          install_doc="$(find verified-artifact -type f -name 'INSTALL-LINUX.md' -print -quit)"
+          manifest="$(find verified-artifact -type f -name 'BUILD-MANIFEST.txt' -print -quit)"
+          for file in "$deb" "$patch" "$sums" "$install_doc" "$manifest"; do
+            test -n "$file" && test -s "$file"
+          done
+          deb_sha="$(awk -v target="dist/orca-ide_${VERSION}_amd64.deb" '$2 == target { print $1 }' "$sums")"
+          patch_sha="$(awk '$2 == "../orca-linux-hardened.patch" { print $1 }' "$sums")"
+          test "${#deb_sha}" -eq 64
+          test "${#patch_sha}" -eq 64
+          test "$(sha256sum "$deb" | cut -d' ' -f1)" = "$deb_sha"
+          test "$(sha256sum "$patch" | cut -d' ' -f1)" = "$patch_sha"
+          test "$(stat -c %s "$deb")" = '162303672'
+          printf 'DEB=%s\nPATCH=%s\nINSTALL_DOC=%s\nBUILD_MANIFEST=%s\nDEB_SHA256=%s\nPATCH_SHA256=%s\n' \
+            "$deb" "$patch" "$install_doc" "$manifest" "$deb_sha" "$patch_sha" >> "$GITHUB_ENV"
+
+      - name: Assemble binary and complete source release
+        run: |
+          set -euxo pipefail
+          mkdir -p release-assets
+          cp "$DEB" "release-assets/orca-ide_${VERSION}_amd64.deb"
+          cp "$PATCH" release-assets/orca-linux-hardened.patch
+          cp "$INSTALL_DOC" release-assets/INSTALL-LINUX.md
+          cp "$BUILD_MANIFEST" release-assets/BUILD-MANIFEST.txt
+          printf '%s\n' "$SOURCE_SHA" > release-assets/SOURCE-COMMIT.txt
+
+          git -C source archive \
+            --format=tar.gz \
+            --prefix="orca-linux-hardened-${VERSION}/" \
+            -o "$GITHUB_WORKSPACE/release-assets/orca-linux-hardened-source-${VERSION}.tar.gz" \
+            "$SOURCE_SHA"
+          git -C source bundle create \
+            "$GITHUB_WORKSPACE/release-assets/orca-linux-hardened-${VERSION}.bundle" \
+            "refs/heads/${SOURCE_BRANCH}"
+
+          cat > release-assets/RELEASE-MANIFEST.txt <<EOF
+          product=Orca Linux Hardened
+          version=${VERSION}
+          platform=linux
+          architecture=amd64
+          package=deb
+          upstream_repository=stablyai/orca
+          upstream_sha=${UPSTREAM_SHA}
+          hardening_harness_sha=${HARDENING_HARNESS_SHA}
+          verified_build_run_id=${VERIFIED_BUILD_RUN_ID}
+          source_branch=${SOURCE_BRANCH}
+          source_commit=${SOURCE_SHA}
+          deb_sha256=${DEB_SHA256}
+          patch_sha256=${PATCH_SHA256}
+          deb_size_bytes=$(stat -c %s "release-assets/orca-ide_${VERSION}_amd64.deb")
+          EOF
+
+          cat > release-assets/RELEASE-NOTES.md <<EOF
+          # Orca Linux Hardened ${VERSION}
+
+          Linux-only hardened Orca build for Debian/Ubuntu-family **amd64** systems.
+
+          ## Install
+
+          \`\`\`bash
+          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/orca-ide_${VERSION}_amd64.deb
+          echo "${DEB_SHA256}  orca-ide_${VERSION}_amd64.deb" | sha256sum -c -
+          sudo apt install ./orca-ide_${VERSION}_amd64.deb
+          orca-hardened-desktop
+          \`\`\`
+
+          ## Critical Linux hardening
+
+          - descendant-aware teardown covers agents manually started inside a plain shell;
+          - pre-spawn limits use terminal count, agent count, concurrent starts, and Linux \`MemAvailable\`;
+          - settled orchestration workers enter Orca's ownership-aware release path automatically;
+          - the desktop launcher runs inside a transient user-systemd scope with memory, swap, and task limits;
+          - AppImage and RPM are intentionally excluded.
+
+          ## Provenance
+
+          - upstream Orca: \`${UPSTREAM_SHA}\`;
+          - hardened source: \`${SOURCE_SHA}\`;
+          - successful build workflow: \`${VERIFIED_BUILD_RUN_ID}\` on Ubuntu 24.04;
+          - DEB SHA-256: \`${DEB_SHA256}\`.
+
+          The build passed regression tests, Node typecheck, changed-code quality checks, Electron packaging, DEB inspection, packaged CLI smoke testing, real \`apt\` installation, launcher verification, removal, and cleanup verification.
+          EOF
+
+          (cd release-assets && sha256sum \
+            "orca-ide_${VERSION}_amd64.deb" \
+            orca-linux-hardened.patch \
+            "orca-linux-hardened-source-${VERSION}.tar.gz" \
+            "orca-linux-hardened-${VERSION}.bundle" \
+            INSTALL-LINUX.md BUILD-MANIFEST.txt RELEASE-MANIFEST.txt SOURCE-COMMIT.txt \
+            > SHA256SUMS)
+
+      - name: Verify every release representation
+        run: |
+          set -euxo pipefail
+          (cd release-assets && sha256sum -c SHA256SUMS)
+          git -C source bundle verify \
+            "$GITHUB_WORKSPACE/release-assets/orca-linux-hardened-${VERSION}.bundle"
+
+          git clone --quiet -b "$SOURCE_BRANCH" \
+            "release-assets/orca-linux-hardened-${VERSION}.bundle" /tmp/bundle-source
+          test "$(git -C /tmp/bundle-source rev-parse HEAD)" = "$SOURCE_SHA"
+          test -f /tmp/bundle-source/src/main/daemon/linux-terminal-spawn-admission.ts
+          test -f /tmp/bundle-source/src/main/runtime/orchestration/worker-terminal-auto-release.ts
+          test -x /tmp/bundle-source/resources/linux/bin/orca-hardened-desktop
+          test -z "$(git -C /tmp/bundle-source status --porcelain)"
+
+          mkdir -p /tmp/archive-source
+          tar -xzf "release-assets/orca-linux-hardened-source-${VERSION}.tar.gz" -C /tmp/archive-source
+          root="/tmp/archive-source/orca-linux-hardened-${VERSION}"
+          test -f "$root/src/main/daemon/linux-terminal-spawn-admission.ts"
+          test -f "$root/src/main/runtime/orchestration/worker-terminal-auto-release.ts"
+          test -x "$root/resources/linux/bin/orca-hardened-desktop"
+          test -f "$root/INSTALL-LINUX.md"
+          test -f "$root/UPSTREAM.lock"
+
+      - name: Publish clean GitHub prerelease
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi
+          gh release create "$RELEASE_TAG" \
+            "release-assets/orca-ide_${VERSION}_amd64.deb" \
+            release-assets/INSTALL-LINUX.md \
+            release-assets/BUILD-MANIFEST.txt \
+            release-assets/RELEASE-MANIFEST.txt \
+            release-assets/SHA256SUMS \
+            release-assets/SOURCE-COMMIT.txt \
+            release-assets/orca-linux-hardened.patch \
+            "release-assets/orca-linux-hardened-source-${VERSION}.tar.gz" \
+            "release-assets/orca-linux-hardened-${VERSION}.bundle" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SOURCE_SHA" \
+            --title "Orca Linux Hardened ${VERSION} (amd64)" \
+            --notes-file release-assets/RELEASE-NOTES.md \
+            --prerelease
+
+      - name: Verify GitHub publication and redownloaded DEB
+        run: |
+          set -euxo pipefail
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${SOURCE_BRANCH}" --jq '.object.sha')" = "$SOURCE_SHA"
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          test "$(jq -r '.draft' <<<"$release_json")" = false
+          test "$(jq -r '.prerelease' <<<"$release_json")" = true
+          test "$(jq -r '.target_commitish' <<<"$release_json")" = "$SOURCE_SHA"
+          for name in \
+            "orca-ide_${VERSION}_amd64.deb" INSTALL-LINUX.md BUILD-MANIFEST.txt \
+            RELEASE-MANIFEST.txt SHA256SUMS SOURCE-COMMIT.txt orca-linux-hardened.patch \
+            "orca-linux-hardened-source-${VERSION}.tar.gz" \
+            "orca-linux-hardened-${VERSION}.bundle"; do
+            jq -e --arg name "$name" '.assets[] | select(.name == $name and .size > 0)' \
+              <<<"$release_json" >/dev/null
+          done
+          size="$(jq -r --arg name "orca-ide_${VERSION}_amd64.deb" '.assets[] | select(.name == $name) | .size' <<<"$release_json")"
+          test "$size" = '162303672'
+          mkdir -p /tmp/published
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "orca-ide_${VERSION}_amd64.deb" --dir /tmp/published
+          test "$(sha256sum "/tmp/published/orca-ide_${VERSION}_amd64.deb" | cut -d' ' -f1)" = "$DEB_SHA256"
+
+      - name: Upload publication evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-linux-hardened-publication-evidence-${{ env.VERSION }}
+          retention-days: 14
+          compression-level: 0
+          path: |
+            release-assets/RELEASE-NOTES.md
+            release-assets/RELEASE-MANIFEST.txt
+            release-assets/SHA256SUMS
+            release-assets/SOURCE-COMMIT.txt
