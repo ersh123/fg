@@ -27,6 +27,11 @@ register_owned_link() {
   fi
 }
 
+desktop_file="${ORCA_HARDENED_DESKTOP_FILE:-/usr/share/applications/orca-ide.desktop}"
+if [ -f "$desktop_file" ]; then
+  sed -i 's|^Exec=.*|Exec=orca-hardened-desktop %U|' "$desktop_file"
+fi
+
 for dir in /opt/Orca /opt/orca-ide /opt/orca; do
   sandbox="$dir/chrome-sandbox"
   if [ -f "$sandbox" ]; then
