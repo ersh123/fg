@@ -1,4 +1,4 @@
-name: Orca Linux Hardening GREEN
+name: Orca Linux Admission RED
 
 on:
   push:
@@ -12,55 +12,38 @@ permissions:
   contents: read
 
 jobs:
-  terminal-teardown-green:
+  linux-admission-red:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 30
     steps:
-      - name: Checkout hardening harness
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: harness
-
-      - name: Checkout pinned Orca source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: stablyai/orca
           ref: 67e22345daf882190911355eed152ef33e051c5e
           path: source
-
-      - name: Apply GREEN implementation
+      - name: Apply completed teardown and admission RED tests
         run: |
-          base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1-green.patch
+          base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1.patch
+          base64 -d harness/orca-hardening/patches/task2-red.patch.gz.b64 | gzip -d > /tmp/task2-red.patch
           cd source
-          git apply --check /tmp/task1-green.patch
-          git apply /tmp/task1-green.patch
-          git diff --check
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+          git apply /tmp/task1.patch
+          git apply --check /tmp/task2-red.patch
+          git apply /tmp/task2-red.patch
+      - uses: pnpm/action-setup@v4
         with:
           version: 12.0.0
           run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: pnpm
           cache-dependency-path: source/pnpm-lock.yaml
-
       - name: Install dependencies
         working-directory: source
         run: pnpm install --frozen-lockfile
-
-      - name: Run terminal teardown tests
+      - name: Run admission RED tests
         working-directory: source
-        run: pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/terminal-session-teardown.test.ts src/main/daemon/session.test.ts src/main/daemon/session-terminal-control.test.ts src/main/daemon/repro-12101-mouse-tracking-survives-agent-death.test.ts
-
-      - name: Typecheck Node code
-        working-directory: source
-        run: pnpm tc:node
-
-      - name: Check changed-file quality
-        working-directory: source
-        run: pnpm run check:code-quality:changed -- 67e22345daf882190911355eed152ef33e051c5e
+        run: pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/linux-terminal-spawn-admission.test.ts
