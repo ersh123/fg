@@ -1,4 +1,4 @@
-name: Orca Linux Hardening RED
+name: Orca Linux Hardening GREEN
 
 on:
   push:
@@ -12,9 +12,9 @@ permissions:
   contents: read
 
 jobs:
-  terminal-teardown-red:
+  terminal-teardown-green:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout hardening harness
         uses: actions/checkout@v4
@@ -28,8 +28,13 @@ jobs:
           ref: 67e22345daf882190911355eed152ef33e051c5e
           path: source
 
-      - name: Apply RED tests
-        run: python harness/orca-hardening/scripts/apply-task1-red.py
+      - name: Apply GREEN implementation
+        run: |
+          base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1-green.patch
+          cd source
+          git apply --check /tmp/task1-green.patch
+          git apply /tmp/task1-green.patch
+          git diff --check
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -50,4 +55,12 @@ jobs:
 
       - name: Run terminal teardown tests
         working-directory: source
-        run: pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/terminal-session-teardown.test.ts src/main/daemon/session.test.ts
+        run: pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/terminal-session-teardown.test.ts src/main/daemon/session.test.ts src/main/daemon/session-terminal-control.test.ts src/main/daemon/repro-12101-mouse-tracking-survives-agent-death.test.ts
+
+      - name: Typecheck Node code
+        working-directory: source
+        run: pnpm tc:node
+
+      - name: Check changed-file quality
+        working-directory: source
+        run: pnpm run check:code-quality:changed
