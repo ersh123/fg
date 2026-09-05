@@ -1,19 +1,21 @@
-name: Orca Linux Admission Integration RED
+name: Orca Linux Admission Integration GREEN
 
 on:
   push:
     branches: [orca-hardening-ci]
     paths:
       - '.github/workflows/orca-hardening-task2-red.yml'
+      - 'orca-hardening/scripts/apply-task2-wiring.py'
+      - 'orca-hardening/source/src/main/daemon/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  linux-admission-integration-red:
+  linux-admission-integration-green:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,7 +25,7 @@ jobs:
           repository: stablyai/orca
           ref: 67e22345daf882190911355eed152ef33e051c5e
           path: source
-      - name: Apply completed layers and integration RED test
+      - name: Apply completed Linux hardening layers
         run: |
           base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1.patch
           cd source
@@ -31,6 +33,8 @@ jobs:
           cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.ts src/main/daemon/
           cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.test.ts src/main/daemon/
           cp ../harness/orca-hardening/source/src/main/daemon/daemon-server-linux-admission.test.ts src/main/daemon/
+          python ../harness/orca-hardening/scripts/apply-task2-wiring.py
+          git diff --check
       - uses: pnpm/action-setup@v4
         with:
           version: 12.0.0
@@ -43,6 +47,18 @@ jobs:
       - name: Install dependencies
         working-directory: source
         run: pnpm install --frozen-lockfile
-      - name: Run integration RED test
+      - name: Run admission and daemon integration tests
         working-directory: source
-        run: pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/daemon-server-linux-admission.test.ts
+        run: >-
+          pnpm exec vitest run --config config/vitest.config.ts
+          src/main/daemon/linux-terminal-spawn-admission.test.ts
+          src/main/daemon/daemon-server-linux-admission.test.ts
+          src/main/daemon/daemon-server-attach-only.test.ts
+          src/main/daemon/terminal-session-teardown.test.ts
+          src/main/daemon/session.test.ts
+      - name: Typecheck Node code
+        working-directory: source
+        run: pnpm tc:node
+      - name: Check changed-file quality
+        working-directory: source
+        run: pnpm run check:code-quality:changed -- 67e22345daf882190911355eed152ef33e051c5e
