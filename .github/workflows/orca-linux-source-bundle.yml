@@ -97,16 +97,26 @@ jobs:
           git config user.email 'noreply@example.invalid'
           git commit -m 'feat(linux): production hardening release 26.9.5-hardened.3'
 
-      - name: Create complete patch, bundle and source archive
+      - name: Create complete patch, portable bundle and source archive
         run: |
           set -euo pipefail
-          mkdir -p out
+          mkdir -p out /tmp/portable-source
           cd source
+          release_commit="$(git rev-parse HEAD)"
           git diff --binary "$ORCA_UPSTREAM_SHA"..HEAD > ../out/orca-linux-hardened-complete.patch
-          git bundle create ../out/orca-linux-hardened-${ORCA_HARDENED_VERSION}.bundle hardening/linux-production
+          git archive HEAD | tar -x -C /tmp/portable-source
           git archive --format=tar.gz --prefix=orca-linux-hardened-${ORCA_HARDENED_VERSION}/ -o ../out/orca-linux-hardened-source-${ORCA_HARDENED_VERSION}.tar.gz HEAD
-          printf 'upstream_sha=%s\nrelease_commit=%s\nversion=%s\narchitecture=amd64\npackage=deb-only\n' \
-            "$ORCA_UPSTREAM_SHA" "$(git rev-parse HEAD)" "$ORCA_HARDENED_VERSION" > ../out/SOURCE-MANIFEST.txt
+
+          git -C /tmp/portable-source init --initial-branch=hardening/linux-production
+          git -C /tmp/portable-source config user.name 'Orca Linux Hardening'
+          git -C /tmp/portable-source config user.email 'noreply@example.invalid'
+          git -C /tmp/portable-source add -A
+          git -C /tmp/portable-source commit -m 'feat(linux): portable production source 26.9.5-hardened.3'
+          portable_commit="$(git -C /tmp/portable-source rev-parse HEAD)"
+          git -C /tmp/portable-source bundle create "$GITHUB_WORKSPACE/out/orca-linux-hardened-${ORCA_HARDENED_VERSION}.bundle" hardening/linux-production
+
+          printf 'upstream_sha=%s\nrelease_commit=%s\nportable_commit=%s\nversion=%s\narchitecture=amd64\npackage=deb-only\n' \
+            "$ORCA_UPSTREAM_SHA" "$release_commit" "$portable_commit" "$ORCA_HARDENED_VERSION" > ../out/SOURCE-MANIFEST.txt
           cd ../out
           sha256sum orca-linux-hardened-complete.patch orca-linux-hardened-${ORCA_HARDENED_VERSION}.bundle orca-linux-hardened-source-${ORCA_HARDENED_VERSION}.tar.gz > SOURCE-SHA256SUMS
 
@@ -118,6 +128,7 @@ jobs:
           test -f /tmp/from-bundle/src/main/daemon/linux-terminal-spawn-admission.ts
           test -f /tmp/from-bundle/src/main/runtime/orchestration/worker-terminal-auto-release.ts
           test -x /tmp/from-bundle/resources/linux/bin/orca-hardened-desktop
+          test -f /tmp/from-bundle/docs/hardening/LINUX-PRODUCTION.md
 
           mkdir /tmp/from-tar
           tar -xzf out/orca-linux-hardened-source-${ORCA_HARDENED_VERSION}.tar.gz -C /tmp/from-tar
