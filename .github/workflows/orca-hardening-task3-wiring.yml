@@ -1,10 +1,12 @@
-name: Orca Worker Auto Release Wiring RED
+name: Orca Worker Auto Release Wiring GREEN
 
 on:
   push:
     branches: [orca-hardening-ci]
     paths:
       - '.github/workflows/orca-hardening-task3-wiring.yml'
+      - 'orca-hardening/scripts/apply-task3-wiring.py'
+      - 'orca-hardening/source/src/main/runtime/orchestration/**'
       - 'orca-hardening/source/src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts'
   workflow_dispatch:
 
@@ -12,9 +14,9 @@ permissions:
   contents: read
 
 jobs:
-  worker-auto-release-wiring-red:
+  worker-auto-release-wiring-green:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,7 +26,7 @@ jobs:
           repository: stablyai/orca
           ref: 67e22345daf882190911355eed152ef33e051c5e
           path: source
-      - name: Apply completed Linux hardening and wiring RED test
+      - name: Apply completed Linux hardening and worker auto-release wiring
         run: |
           set -euo pipefail
           base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1.patch
@@ -37,6 +39,8 @@ jobs:
           cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.ts src/main/runtime/orchestration/
           cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.test.ts src/main/runtime/orchestration/
           cp ../harness/orca-hardening/source/src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts src/main/runtime/rpc/methods/
+          python ../harness/orca-hardening/scripts/apply-task3-wiring.py
+          git diff --check
       - uses: pnpm/action-setup@v4
         with:
           version: 12.0.0
@@ -49,6 +53,19 @@ jobs:
       - name: Install dependencies
         working-directory: source
         run: pnpm install --frozen-lockfile
-      - name: Run wiring RED tests
+      - name: Run worker auto-release and RPC regression tests
         working-directory: source
-        run: pnpm exec vitest run --config config/vitest.config.ts src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts
+        run: >-
+          pnpm exec vitest run --config config/vitest.config.ts
+          src/main/runtime/orchestration/worker-terminal-auto-release.test.ts
+          src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts
+          src/main/runtime/rpc/methods/orchestration-send.test.ts
+          src/main/runtime/rpc/methods/orchestration-check.test.ts
+          src/main/runtime/rpc/methods/orchestration-worker-release.test.ts
+          src/main/runtime/rpc/methods/orchestration-worker-release-recovery.test.ts
+      - name: Typecheck Node code
+        working-directory: source
+        run: pnpm tc:node
+      - name: Check changed-file quality
+        working-directory: source
+        run: pnpm run check:code-quality:changed -- 67e22345daf882190911355eed152ef33e051c5e
