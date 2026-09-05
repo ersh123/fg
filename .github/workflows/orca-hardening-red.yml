@@ -63,4 +63,4 @@ jobs:
 
       - name: Check changed-file quality
         working-directory: source
-        run: pnpm run check:code-quality:changed
+        run: pnpm run check:code-quality:changed -- 67e22345daf882190911355eed152ef33e051c5e
