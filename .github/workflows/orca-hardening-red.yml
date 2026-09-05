@@ -27,11 +27,10 @@ jobs:
       - name: Apply completed teardown and admission policy
         run: |
           base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1.patch
-          base64 -d harness/orca-hardening/patches/task2-unit-green.patch.gz.b64 | gzip -d > /tmp/task2.patch
           cd source
           git apply /tmp/task1.patch
-          git apply --check /tmp/task2.patch
-          git apply /tmp/task2.patch
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.test.ts src/main/daemon/
           git diff --check
       - uses: pnpm/action-setup@v4
         with:
