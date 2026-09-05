@@ -29,8 +29,11 @@ jobs:
           path: source
 
       - name: Apply RED tests
-        working-directory: source
-        run: git apply --check ../harness/orca-hardening/patches/task1-red.patch && git apply ../harness/orca-hardening/patches/task1-red.patch
+        run: |
+          base64 -d harness/orca-hardening/patches/task1-red.patch.b64 > /tmp/task1-red.patch
+          cd source
+          git apply --check /tmp/task1-red.patch
+          git apply /tmp/task1-red.patch
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
