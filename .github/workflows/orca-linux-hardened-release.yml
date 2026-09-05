@@ -1,0 +1,250 @@
+name: Release Orca Linux Hardened DEB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [orca-hardening-ci]
+    paths:
+      - '.github/workflows/orca-linux-hardened-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orca-linux-hardened-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ORCA_UPSTREAM_SHA: 67e22345daf882190911355eed152ef33e051c5e
+  ORCA_HARDENED_VERSION: 26.9.5-hardened.3
+
+jobs:
+  release-deb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Checkout hardening harness
+        uses: actions/checkout@v4
+        with:
+          path: harness
+
+      - name: Checkout pinned Orca source
+        uses: actions/checkout@v4
+        with:
+          repository: stablyai/orca
+          ref: ${{ env.ORCA_UPSTREAM_SHA }}
+          path: source
+          fetch-depth: 1
+
+      - name: Apply verified Linux hardening
+        run: |
+          set -euo pipefail
+          base64 -d harness/orca-hardening/patches/task1-green.patch.gz.b64 | gzip -d > /tmp/task1.patch
+          cd source
+          git apply --check /tmp/task1.patch
+          git apply /tmp/task1.patch
+
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/linux-terminal-spawn-admission.test.ts src/main/daemon/
+          cp ../harness/orca-hardening/source/src/main/daemon/daemon-server-linux-admission.test.ts src/main/daemon/
+          python ../harness/orca-hardening/scripts/apply-task2-wiring.py
+
+          cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.ts src/main/runtime/orchestration/
+          cp ../harness/orca-hardening/source/src/main/runtime/orchestration/worker-terminal-auto-release.test.ts src/main/runtime/orchestration/
+          cp ../harness/orca-hardening/source/src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts src/main/runtime/rpc/methods/
+          python ../harness/orca-hardening/scripts/apply-task3-wiring.py
+
+          cp ../harness/orca-hardening/source/resources/linux/bin/orca-hardened-desktop resources/linux/bin/
+          cp ../harness/orca-hardening/source/resources/linux/packaging/after-install.sh resources/linux/packaging/
+          cp ../harness/orca-hardening/source/resources/linux/packaging/after-remove.sh resources/linux/packaging/
+          cp ../harness/orca-hardening/source/config/scripts/linux-hardened-launcher.test.mjs config/scripts/
+          chmod +x resources/linux/bin/orca-hardened-desktop resources/linux/packaging/after-install.sh resources/linux/packaging/after-remove.sh
+          python ../harness/orca-hardening/scripts/apply-task4-packaging.py
+
+          git diff --check
+          bash -n resources/linux/bin/orca-hardened-desktop
+          bash -n resources/linux/packaging/after-install.sh
+          bash -n resources/linux/packaging/after-remove.sh
+          git diff --binary > ../orca-linux-hardened.patch
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/electron-builder
+          key: electron-builder-linux-${{ hashFiles('source/pnpm-lock.yaml') }}
+          restore-keys: |
+            electron-builder-linux-
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.0.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Install package tooling
+        run: sudo apt-get update && sudo apt-get install -y cpio rpm xvfb tree
+
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Run hardened regression gates
+        working-directory: source
+        run: |
+          node --test config/scripts/linux-hardened-launcher.test.mjs
+          pnpm exec vitest run --config config/vitest.config.ts \
+            config/scripts/linux-package-maintainer-scripts.test.mjs \
+            src/main/daemon/linux-terminal-spawn-admission.test.ts \
+            src/main/daemon/daemon-server-linux-admission.test.ts \
+            src/main/daemon/daemon-server-attach-only.test.ts \
+            src/main/daemon/terminal-session-teardown.test.ts \
+            src/main/daemon/session.test.ts \
+            src/main/daemon/session-terminal-control.test.ts \
+            src/main/daemon/repro-12101-mouse-tracking-survives-agent-death.test.ts \
+            src/main/runtime/orchestration/worker-terminal-auto-release.test.ts \
+            src/main/runtime/rpc/methods/orchestration-worker-auto-release-wiring.test.ts \
+            src/main/runtime/rpc/methods/orchestration-send.test.ts \
+            src/main/runtime/rpc/methods/orchestration-check.test.ts \
+            src/main/runtime/rpc/methods/orchestration-worker-release.test.ts \
+            src/main/runtime/rpc/methods/orchestration-worker-release-recovery.test.ts
+
+      - name: Typecheck and changed-code quality
+        working-directory: source
+        run: |
+          pnpm tc:node
+          pnpm run check:code-quality:changed -- "$ORCA_UPSTREAM_SHA"
+
+      - name: Build desktop package inputs
+        working-directory: source
+        run: pnpm run build:desktop
+
+      - name: Prepare Electron native runtime
+        working-directory: source
+        run: pnpm run ensure:electron-runtime
+
+      - name: Package x64 DEB only
+        working-directory: source
+        env:
+          ORCA_LOCAL_BUILD_VERSION: ${{ env.ORCA_HARDENED_VERSION }}
+          ORCA_BUILD_COMMIT: ${{ github.sha }}
+          ORCA_REUSE_PREPARED_NATIVE_RUNTIME: '1'
+        run: >-
+          pnpm exec electron-builder
+          --config config/electron-builder.config.cjs
+          --linux deb --x64 --publish never
+
+      - name: Upload raw DEB immediately
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-linux-hardened-raw-${{ env.ORCA_HARDENED_VERSION }}-amd64
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          path: source/dist/*.deb
+
+      - name: Verify DEB payload and package identity
+        working-directory: source
+        run: |
+          set -euxo pipefail
+          deb="dist/orca-ide_${ORCA_HARDENED_VERSION}_amd64.deb"
+          root=/tmp/orca-hardened-root
+          control=/tmp/orca-hardened-control
+          desktop_probe=/tmp/orca-hardened.desktop
+          rm -rf "$root" "$control" "$desktop_probe"
+          test -s "$deb"
+          dpkg-deb --info "$deb"
+          marker="$(dpkg-deb --fsys-tarfile "$deb" | tar -xOf - ./opt/Orca/resources/package-type)"
+          test "$marker" = deb
+          dpkg-deb -x "$deb" "$root"
+          dpkg-deb -e "$deb" "$control"
+          find "$root/opt/Orca" -maxdepth 4 -printf '%M %p\n' | sort | sed -n '1,260p'
+          find "$root/usr/share/applications" -maxdepth 1 -type f -print
+          find "$control" -maxdepth 1 -printf '%M %p\n' | sort
+          test -x "$root/opt/Orca/orca-ide"
+          test -x "$root/opt/Orca/resources/bin/orca-hardened-desktop"
+          test -f "$root/opt/Orca/resources/app.asar"
+          test -f "$root/opt/Orca/resources/app.asar.unpacked/out/main/daemon-entry.js"
+          desktop_file="$(find "$root/usr/share/applications" -maxdepth 1 -type f -name '*.desktop' -print -quit)"
+          test -n "$desktop_file"
+          test -f "$control/postinst"
+          test -f "$control/postrm"
+          grep -F 'orca-hardened-desktop' "$control/postinst"
+          grep -F 'orca-hardened-desktop' "$control/postrm"
+          cp "$desktop_file" "$desktop_probe"
+          ORCA_HARDENED_DESKTOP_FILE="$desktop_probe" bash "$control/postinst"
+          grep -Fx 'Exec=orca-hardened-desktop %U' "$desktop_probe"
+          ! find dist -maxdepth 1 -type f \( -name '*.AppImage' -o -name '*.rpm' \) -print -quit | grep -q .
+
+      - name: Smoke packaged CLI
+        working-directory: source
+        run: node config/scripts/smoke-packaged-cli.mjs --app-dir=dist/linux-unpacked
+
+      - name: Install and remove package on Ubuntu
+        working-directory: source
+        run: |
+          set -euxo pipefail
+          deb="dist/orca-ide_${ORCA_HARDENED_VERSION}_amd64.deb"
+          package_name="$(dpkg-deb -f "$deb" Package)"
+          sudo apt-get install -y "./$deb"
+          test -L /usr/bin/orca-hardened-desktop
+          test -x "$(readlink -f /usr/bin/orca-hardened-desktop)"
+          grep -Fx 'Exec=orca-hardened-desktop %U' /usr/share/applications/orca-ide.desktop
+          sudo dpkg --remove "$package_name"
+          test ! -e /usr/bin/orca-hardened-desktop
+
+      - name: Write checksums, manifest and install guide
+        working-directory: source
+        run: |
+          set -euo pipefail
+          deb="dist/orca-ide_${ORCA_HARDENED_VERSION}_amd64.deb"
+          sha256sum "$deb" ../orca-linux-hardened.patch > ../SHA256SUMS
+          cat > ../BUILD-MANIFEST.txt <<EOF
+          product=Orca Linux Hardened
+          version=${ORCA_HARDENED_VERSION}
+          architecture=amd64
+          package=deb
+          upstream_sha=${ORCA_UPSTREAM_SHA}
+          hardening_harness_sha=${GITHUB_SHA}
+          terminal_descendant_reaping=true
+          linux_spawn_admission=true
+          settled_worker_auto_release=true
+          desktop_cgroup_boundary=true
+          appimage_built=false
+          rpm_built=false
+          EOF
+          cat > ../INSTALL-LINUX.md <<EOF
+          # Orca Linux Hardened ${ORCA_HARDENED_VERSION}
+
+          ## Install
+
+          \`\`\`bash
+          sudo apt install ./orca-ide_${ORCA_HARDENED_VERSION}_amd64.deb
+          \`\`\`
+
+          Launch from the desktop menu or run \`orca-hardened-desktop\`.
+
+          The launcher derives a systemd memory boundary from installed RAM and preserves 20% for the desktop, with a minimum 2 GiB and maximum 8 GiB reserve. The daemon also refuses unsafe terminal or agent starts before memory pressure becomes critical.
+
+          Optional overrides: \`ORCA_HARDENED_MEMORY_HIGH_MB\`, \`ORCA_HARDENED_MEMORY_MAX_MB\`, \`ORCA_HARDENED_SWAP_MAX_MB\`, \`ORCA_HARDENED_TASKS_MAX\`, \`ORCA_LINUX_MAX_TERMINALS\`, \`ORCA_LINUX_MAX_AGENTS\`, \`ORCA_LINUX_MAX_CONCURRENT_STARTS\`, and \`ORCA_LINUX_MEMORY_RESERVE_MB\`.
+          EOF
+
+      - name: Upload verified Linux release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: orca-linux-hardened-${{ env.ORCA_HARDENED_VERSION }}-amd64
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          path: |
+            source/dist/orca-ide_${{ env.ORCA_HARDENED_VERSION }}_amd64.deb
+            orca-linux-hardened.patch
+            SHA256SUMS
+            BUILD-MANIFEST.txt
+            INSTALL-LINUX.md
