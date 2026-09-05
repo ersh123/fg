@@ -1,0 +1,34 @@
+name: Reconcile Orca Release Checksum
+
+on:
+  push:
+    branches: [orca-hardening-ci]
+    paths:
+      - '.github/workflows/fix-publish-orca-sha.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: orca-hardening-ci
+          fetch-depth: 1
+      - name: Pin checksum from successful verified artifact
+        run: |
+          set -euo pipefail
+          old='5964e1183e829bc8328db2427772ad0196162b93392aa4661762588985fe4e60'
+          new='668903d0dfa5bfcd87e14d21dc04417d39e3a7b1509f0d307b1b21734511a28c'
+          file='.github/workflows/publish-orca-linux-hardened.yml'
+          grep -F "$old" "$file"
+          sed -i "s/$old/$new/g" "$file"
+          grep -F "$new" "$file"
+          git config user.name 'Orca Linux Hardening'
+          git config user.email 'noreply@users.noreply.github.com'
+          git add "$file"
+          git commit -m 'release(hardening): pin verified DEB checksum'
+          git push origin HEAD:orca-hardening-ci
