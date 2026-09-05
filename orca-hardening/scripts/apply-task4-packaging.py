@@ -11,15 +11,6 @@ def replace_once(path: str, old: str, new: str) -> None:
 
 replace_once(
     'config/electron-builder.config.cjs',
-    """        StartupWMClass: 'orca'
-""",
-    """        StartupWMClass: 'orca',
-        // Why: the hardened desktop entry owns the aggregate cgroup boundary.
-        Exec: 'orca-hardened-desktop %U'
-""",
-)
-replace_once(
-    'config/electron-builder.config.cjs',
     """      {
         from: 'resources/linux/bin/orca-ide',
         to: 'bin/orca-ide'
