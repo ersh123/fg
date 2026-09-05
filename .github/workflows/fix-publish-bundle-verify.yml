@@ -1,0 +1,44 @@
+name: Repair Orca Publisher Bundle Verification
+
+on:
+  push:
+    branches: [orca-hardening-ci]
+    paths:
+      - '.github/workflows/fix-publish-bundle-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: orca-hardening-ci
+          fetch-depth: 1
+
+      - name: Run bundle verification from a Git repository
+        run: |
+          set -euo pipefail
+          file='.github/workflows/publish-orca-linux-hardened.yml'
+          old='          git bundle verify "release-assets/orca-linux-hardened-${VERSION}.bundle"'
+          new='          git -C publish-source bundle verify "$GITHUB_WORKSPACE/release-assets/orca-linux-hardened-${VERSION}.bundle"'
+          grep -Fx "$old" "$file"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/workflows/publish-orca-linux-hardened.yml')
+          text = path.read_text()
+          old = '          git bundle verify "release-assets/orca-linux-hardened-${VERSION}.bundle"'
+          new = '          git -C publish-source bundle verify "$GITHUB_WORKSPACE/release-assets/orca-linux-hardened-${VERSION}.bundle"'
+          assert text.count(old) == 1, text.count(old)
+          path.write_text(text.replace(old, new))
+          PY
+          grep -Fx "$new" "$file"
+          git diff --check
+          git config user.name 'Orca Linux Hardening'
+          git config user.email 'noreply@users.noreply.github.com'
+          git add "$file"
+          git commit -m 'release(hardening): verify bundle from source repository'
+          git push origin HEAD:orca-hardening-ci
